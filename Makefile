@@ -8,15 +8,20 @@ LDFLAGS   := -s -w -X $(PKG)/internal/buildinfo.version=$(VERSION) -X $(PKG)/int
 GOLANGCI  ?= golangci-lint
 
 .DEFAULT_GOAL := help
-.PHONY: help build test cover lint fmt tidy check validate-testdata clean
+.PHONY: help build itest-db test cover lint fmt tidy check validate-testdata clean
 
 help: ## show this help
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  %-18s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
-build: ## build bin/manufacture
+build: ## build bin/manufacture and bin/mfctl
 	CGO_ENABLED=0 $(GO) build -trimpath -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/manufacture ./cmd/manufacture
+	CGO_ENABLED=0 $(GO) build -trimpath -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/mfctl ./cmd/mfctl
 
-test: ## run unit tests with the race detector
+itest-db: ## start a throwaway PostgreSQL for integration tests (prints MF_TEST_DATABASE_URL)
+	docker run -d --rm --name mf-itest-pg -e POSTGRES_USER=mf -e POSTGRES_PASSWORD=mf -e POSTGRES_DB=mf -p 127.0.0.1:55432:5432 postgres:17
+	@echo 'export MF_TEST_DATABASE_URL=postgres://mf:mf@127.0.0.1:55432/mf?sslmode=disable'
+
+test: ## run tests with the race detector (integration tests need MF_TEST_DATABASE_URL)
 	$(GO) test -race -count=1 ./...
 
 cover: ## run tests and print coverage per function

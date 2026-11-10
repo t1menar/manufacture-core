@@ -35,6 +35,18 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: mf
+          POSTGRES_PASSWORD: mf
+          POSTGRES_DB: mf
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U mf" --health-interval 2s --health-timeout 5s --health-retries 30
+    env:
+      MF_TEST_DATABASE_URL: postgres://mf:mf@localhost:5432/mf?sslmode=disable
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -59,9 +71,12 @@ jobs:
       - name: smoke
         run: |
           bin/manufacture version
+          bin/mfctl help
           make validate-testdata
       - uses: actions/upload-artifact@v7
         with:
           name: manufacture-linux-amd64
-          path: bin/manufacture
+          path: |
+            bin/manufacture
+            bin/mfctl
           retention-days: 7

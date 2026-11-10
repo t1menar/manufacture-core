@@ -28,6 +28,7 @@ linters:
       disabled-checks:
         - hugeParam # spec structs are passed by value on purpose
         - unnamedResult
+        - rangeValCopy # small read-only loops over revisions; clarity over copies
     nolintlint:
       require-explanation: true
       require-specific: true
