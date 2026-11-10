@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Manufacture gateway API
-  version: 0.3.0
+  version: 0.4.0
   summary: REST and live event stream of the Manufacture core.
   description: |
     The gateway role of `manufacture serve` exposes this API on `MF_LISTEN_ADDR` under `/api/v1`,
@@ -9,7 +9,12 @@ info:
 
     **Auth.** Every `/api/v1` call needs the admin token (`MF_ADMIN_TOKEN`), sent either as
     `Authorization: Bearer <token>` or as the `mf_session` cookie that `POST /api/v1/session` sets.
-    One token, one role (admin) for now.
+    One token, one role (admin) for now. The only exception is `POST /api/v1/attempts/{id}/confirm`,
+    which takes a **module token** (`MF_MODULE_TOKEN`, `mft_...`) and rejects the admin token.
+
+    **Operator actions** (cancel, resume, retry, skip, budget and priority changes, dead-letter
+    actions) require `{"comment": "..."}` (1-2000 characters), written to the audit log and the
+    run timeline; 422 without it. The actor is `X-Admin-Actor` when sent, otherwise `admin`.
 
     **Errors** are `application/problem+json` (RFC 9457) with a stable `code`; 422 responses
     also carry `errors[]` (`path`, `line`, `message`, ...).
@@ -39,6 +44,8 @@ tags:
     description: Modules and pipelines (declarative specs with revisions).
   - name: runs
     description: Pipeline runs, steps, attempts and blobs.
+  - name: modules
+    description: Calls made by modules (confirm) and dead letters of module queues.
   - name: live
     description: Snapshots and the live event stream for dashboards and the 3D conveyor.
 paths:
@@ -246,7 +253,7 @@ paths:
       parameters:
         - { name: Idempotency-Key, in: header, schema: { type: string, maxLength: 256 } }
       requestBody:
-        content: { application/json: { schema: { type: object, additionalProperties: false, properties: { data: { type: object } } } } }
+        content: { application/json: { schema: { type: object, additionalProperties: false, properties: { data: { type: object }, priority: { $ref: "#/components/schemas/Priority" }, labels: { $ref: "#/components/schemas/Labels" }, dedup_key: { type: string, maxLength: 256 } } } } }
       responses:
         "201": { description: Run created (or the existing run for the same Idempotency-Key)., content: { application/json: { schema: { $ref: "#/components/schemas/Run" } } } }
         "202": { description: Source module triggered., content: { application/json: { schema: { type: object, required: [trigger_id], properties: { trigger_id: { type: string, format: uuid } } } } } }
@@ -292,16 +299,20 @@ paths:
       operationId: cancelRun
       tags: [runs]
       summary: Cancel a queued, running or parked run
+      requestBody: { $ref: "#/components/requestBodies/Operator" }
       responses:
         "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Run" } } } }
         "404": { $ref: "#/components/responses/Problem" }
         "409": { $ref: "#/components/responses/Problem" }
+        "422": { $ref: "#/components/responses/Problem" }
   /api/v1/runs/{id}/resume:
     parameters: [{ $ref: "#/components/parameters/ID" }]
     post:
       operationId: resumeRun
       tags: [runs]
-      summary: Resume a run in needs_attention by retrying its failed steps with the same input
+      summary: Resume a run in needs_attention by retrying the failed steps of the current visit (same step_key)
+      description: Needs `acknowledge_attention` true when a failed step ended with an attention error (409 attention_ack_required otherwise).
+      requestBody: { $ref: "#/components/requestBodies/OperatorAck" }
       responses:
         "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Run" } } } }
         "404": { $ref: "#/components/responses/Problem" }
@@ -312,6 +323,7 @@ paths:
       operationId: retryRun
       tags: [runs]
       summary: Start a new run of the same pipeline revision with the same initial data
+      requestBody: { $ref: "#/components/requestBodies/Operator" }
       responses:
         "201": { description: The new run (trigger.kind = retry)., content: { application/json: { schema: { $ref: "#/components/schemas/Run" } } } }
         "404": { $ref: "#/components/responses/Problem" }
@@ -324,6 +336,8 @@ paths:
       operationId: getRunSnapshot
       tags: [runs]
       summary: Run context saved after a stage (blob references are not resolved)
+      parameters:
+        - { name: visit, in: query, description: Visit of the stage; the last one by default., schema: { type: integer, minimum: 1 } }
       responses:
         "200": { description: The context JSON., content: { application/json: { schema: { type: object } } } }
         "404": { $ref: "#/components/responses/Problem" }
@@ -339,6 +353,173 @@ paths:
           description: OK
           content: { application/json: { schema: { type: object, required: [items], properties: { items: { type: array, items: { $ref: "#/components/schemas/StoredEvent" } }, next_cursor: { type: string } } } } }
         "404": { $ref: "#/components/responses/Problem" }
+  /api/v1/runs/{id}/budget:
+    parameters: [{ $ref: "#/components/parameters/ID" }]
+    patch:
+      operationId: patchRunBudget
+      tags: [runs]
+      summary: Change the run budget (typically before resume after budget_exceeded)
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, additionalProperties: false, required: [run_usd, comment], properties: { run_usd: { type: number, exclusiveMinimum: 0 }, warn_usd: { type: number, exclusiveMinimum: 0 }, comment: { $ref: "#/components/schemas/Comment" } } } } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Run" } } } }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+        "422": { $ref: "#/components/responses/Problem" }
+  /api/v1/runs/{id}/priority:
+    parameters: [{ $ref: "#/components/parameters/ID" }]
+    patch:
+      operationId: patchRunPriority
+      tags: [runs]
+      summary: Change the priority of a queued run
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, additionalProperties: false, required: [priority, comment], properties: { priority: { $ref: "#/components/schemas/Priority" }, comment: { $ref: "#/components/schemas/Comment" } } } } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Run" } } } }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { description: The run is no longer queued., content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } } }
+        "422": { $ref: "#/components/responses/Problem" }
+  /api/v1/steps/{step_key}/retry:
+    parameters: [{ $ref: "#/components/parameters/StepKey" }]
+    post:
+      operationId: retryStep
+      tags: [runs]
+      summary: New attempt of the same visit (same step_key, so a module ledger deduplicates)
+      description: When the last error is of class attention (including outcome_unknown), the request needs `acknowledge_attention` true; otherwise 409 `attention_ack_required` with the error text, which the UI shows for confirmation.
+      requestBody: { $ref: "#/components/requestBodies/OperatorAck" }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Step" } } } }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+        "422": { $ref: "#/components/responses/Problem" }
+  /api/v1/steps/{step_key}/skip:
+    parameters: [{ $ref: "#/components/parameters/StepKey" }]
+    post:
+      operationId: skipStep
+      tags: [runs]
+      summary: Complete the step on behalf of the module (pass a gate or decide by hand)
+      description: "`output` is checked against the module output_schema; a waiting module gets step.cancel with reason operator."
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, additionalProperties: false, required: [comment], properties: { comment: { $ref: "#/components/schemas/Comment" }, output: { type: object } } } } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Step" } } } }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+        "422": { $ref: "#/components/responses/Problem" }
+  /api/v1/steps/{step_key}/cancel:
+    parameters: [{ $ref: "#/components/parameters/StepKey" }]
+    post:
+      operationId: cancelStep
+      tags: [runs]
+      summary: Cancel the step; then the step on_cancel applies (fail or attention, default attention)
+      requestBody: { $ref: "#/components/requestBodies/Operator" }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Step" } } } }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+        "422": { $ref: "#/components/responses/Problem" }
+  /api/v1/attempts/{id}/confirm:
+    parameters: [{ $ref: "#/components/parameters/ID" }]
+    post:
+      operationId: confirmAttempt
+      tags: [modules]
+      summary: Check, right before an irreversible action, that the attempt is still current
+      description: |
+        Called by a module (module token) before an irreversible side effect. One transaction checks that
+        the attempt is the current attempt of its step, running or waiting, with a live lease, that the run
+        is running or waiting_human and that the deadline is more than `extend_seconds` away. On `ok` the lease
+        is extended to now + extend_seconds and the attempt becomes **confirmed**: until `confirmed_until`
+        it is never marked lost or timed out, and afterwards without a result it goes to needs_attention
+        (outcome_unknown) instead of a retry. Repeating confirm is idempotent.
+      security: [{ moduleToken: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/ConfirmRequest" } } }
+      responses:
+        "200": { description: One of the four outcomes., content: { application/json: { schema: { $ref: "#/components/schemas/ConfirmResult" } } } }
+        "401": { description: Unknown or revoked module token., content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } } }
+        "403": { description: "The attempt belongs to another module, or the admin token was used.", content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } } }
+        "404": { $ref: "#/components/responses/Problem" }
+        "422": { description: step_key does not match the attempt., content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } } }
+  /api/v1/dead-letters:
+    get:
+      operationId: listDeadLetters
+      tags: [modules]
+      summary: Dead-lettered broker messages, newest first
+      parameters:
+        - { name: queue, in: query, schema: { type: string } }
+        - { name: type, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { $ref: "#/components/schemas/DeadLetterStatus" } }
+        - { $ref: "#/components/parameters/Limit" }
+        - { $ref: "#/components/parameters/Cursor" }
+      responses:
+        "200":
+          description: OK
+          content: { application/json: { schema: { type: object, required: [items], properties: { items: { type: array, items: { $ref: "#/components/schemas/DeadLetter" } }, next_cursor: { type: string } } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /api/v1/dead-letters/redeliver:
+    post:
+      operationId: redeliverDeadLetters
+      tags: [modules]
+      summary: Redeliver several dead letters (same message_id, through the outbox)
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, additionalProperties: false, required: [ids, comment], properties: { ids: { type: array, minItems: 1, maxItems: 500, items: { type: integer } }, comment: { $ref: "#/components/schemas/Comment" } } } } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { type: object, required: [redelivered], properties: { redelivered: { type: integer } } } } } }
+        "422": { $ref: "#/components/responses/Problem" }
+  /api/v1/dead-letters/{dl_id}:
+    parameters: [{ $ref: "#/components/parameters/DeadLetterID" }]
+    get:
+      operationId: getDeadLetter
+      tags: [modules]
+      summary: One dead letter with body, headers and x-death
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/DeadLetterDetail" } } } }
+        "404": { $ref: "#/components/responses/Problem" }
+  /api/v1/dead-letters/{dl_id}/redeliver:
+    parameters: [{ $ref: "#/components/parameters/DeadLetterID" }]
+    post:
+      operationId: redeliverDeadLetter
+      tags: [modules]
+      summary: Publish the message again to its original exchange and routing key with the same message_id
+      requestBody: { $ref: "#/components/requestBodies/Operator" }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/DeadLetter" } } } }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+        "422": { $ref: "#/components/responses/Problem" }
+  /api/v1/dead-letters/{dl_id}/discard:
+    parameters: [{ $ref: "#/components/parameters/DeadLetterID" }]
+    post:
+      operationId: discardDeadLetter
+      tags: [modules]
+      summary: Mark a dead letter discarded
+      requestBody: { $ref: "#/components/requestBodies/Operator" }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/DeadLetter" } } } }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+        "422": { $ref: "#/components/responses/Problem" }
+  /api/v1/usage:
+    get:
+      operationId: getUsage
+      tags: [runs]
+      summary: Usage totals (cost and tokens as reported by modules), grouped
+      parameters:
+        - { name: pipeline, in: query, schema: { type: string } }
+        - { name: label, in: query, description: "key=value", schema: { type: string } }
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+        - { name: group_by, in: query, schema: { type: string, enum: [pipeline, day, module, stage], default: pipeline } }
+      responses:
+        "200":
+          description: OK
+          content: { application/json: { schema: { type: object, required: [items, total], properties: { total: { $ref: "#/components/schemas/Usage" }, items: { type: array, items: { type: object, required: [key, usage], properties: { key: { type: string }, usage: { $ref: "#/components/schemas/Usage" } } } } } } } }
+        default: { $ref: "#/components/responses/Problem" }
   /api/v1/blobs/presign:
     get:
       operationId: presignBlob
@@ -402,11 +583,21 @@ components:
   securitySchemes:
     bearer: { type: http, scheme: bearer, description: "MF_ADMIN_TOKEN" }
     session: { type: apiKey, in: cookie, name: mf_session }
+    moduleToken: { type: http, scheme: bearer, description: "MF_MODULE_TOKEN of a module (mft_...), shown once when the module is applied; accepted only by confirm." }
   parameters:
     Name: { name: name, in: path, required: true, schema: { type: string, pattern: "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$" } }
     ID: { name: id, in: path, required: true, schema: { type: string, format: uuid } }
     Limit: { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
     Cursor: { name: cursor, in: query, schema: { type: string } }
+    StepKey: { name: step_key, in: path, required: true, description: "One visit of a step (uuid5, see docs/messaging.md).", schema: { type: string, format: uuid } }
+    DeadLetterID: { name: dl_id, in: path, required: true, schema: { type: integer } }
+  requestBodies:
+    Operator:
+      required: true
+      content: { application/json: { schema: { type: object, additionalProperties: false, required: [comment], properties: { comment: { $ref: "#/components/schemas/Comment" } } } } }
+    OperatorAck:
+      required: true
+      content: { application/json: { schema: { type: object, additionalProperties: false, required: [comment], properties: { comment: { $ref: "#/components/schemas/Comment" }, acknowledge_attention: { type: boolean, default: false } } } } }
   responses:
     Problem:
       description: Error
@@ -626,8 +817,88 @@ components:
         applied_by: { type: string }
         source: { type: string }
         managed_by: { type: string }
-    RunStatus: { type: string, enum: [queued, running, succeeded, failed, needs_attention, cancelled] }
-    StepStatus: { type: string, enum: [pending, dispatched, running, succeeded, failed, skipped, cancelled] }
+    RunStatus:
+      type: string
+      description: "waiting_human: every unfinished step of the current stage waits for a human (does not hold a max_runs slot unless concurrency.count_waiting)."
+      enum: [queued, running, waiting_human, succeeded, failed, needs_attention, cancelled]
+    StepStatus: { type: string, enum: [pending, dispatched, running, waiting, succeeded, failed, skipped, cancelled] }
+    Comment: { type: string, minLength: 1, maxLength: 2000 }
+    Priority: { type: integer, minimum: -100, maximum: 100, default: 0 }
+    Labels: { type: object, maxProperties: 32, additionalProperties: { type: string, maxLength: 256 } }
+    Usage:
+      type: object
+      description: Cost and tokens as reported by modules (cumulative per attempt; summed per step and run).
+      required: [cost_usd]
+      properties:
+        cost_usd: { type: number }
+        tokens:
+          type: object
+          additionalProperties:
+            type: object
+            properties: { input: { type: integer }, output: { type: integer }, cache_read: { type: integer }, cache_write: { type: integer } }
+    Attention:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string, examples: [step_failed, budget_exceeded, budget_insufficient, outcome_unknown, max_visits_exceeded, cancelled_after_confirm, timeout] }
+        message: { type: string }
+    Waiting:
+      type: object
+      required: [reason, since]
+      properties:
+        reason: { type: string, enum: [human, external] }
+        message: { type: string }
+        expected_by: { type: string, format: date-time }
+        since: { type: string, format: date-time }
+        deadline: { type: string, format: date-time, description: When wait.timeout expires. }
+    ConfirmRequest:
+      type: object
+      additionalProperties: false
+      required: [step_key]
+      properties:
+        step_key: { type: string, format: uuid }
+        action: { type: string, maxLength: 128, description: "What the module is about to do (audit), e.g. media_publish." }
+        extend_seconds: { type: integer, minimum: 1, maximum: 600, default: 120 }
+    ConfirmResult:
+      type: object
+      required: [result, attempt_id, step_key, visit]
+      properties:
+        result: { type: string, enum: [ok, superseded, cancelled, deadline] }
+        attempt_id: { type: string, format: uuid }
+        step_key: { type: string, format: uuid }
+        visit: { type: integer }
+        lease_until: { type: string, format: date-time }
+        deadline: { type: string, format: date-time }
+        detail: { type: string, description: "superseded: new_attempt | lost | timed_out; cancelled: run | step | budget | run_inactive." }
+    DeadLetterStatus: { type: string, enum: [parked, redelivered, discarded] }
+    DeadLetter:
+      type: object
+      required: [id, exchange, routing_key, source_queue, reason, death_count, status, received_at]
+      properties:
+        id: { type: integer }
+        message_id: { type: string, format: uuid }
+        type: { type: string }
+        exchange: { type: string }
+        routing_key: { type: string }
+        source_queue: { type: string }
+        source_module: { type: string }
+        reason: { type: string, description: "x-death reason: rejected, expired, maxlen, delivery_limit." }
+        death_count: { type: integer }
+        status: { $ref: "#/components/schemas/DeadLetterStatus" }
+        first_death_at: { type: string, format: date-time }
+        received_at: { type: string, format: date-time }
+        acted_at: { type: string, format: date-time }
+        acted_by: { type: string }
+        comment: { type: string }
+    DeadLetterDetail:
+      allOf:
+        - $ref: "#/components/schemas/DeadLetter"
+        - type: object
+          required: [headers, body]
+          properties:
+            headers: { type: object }
+            body: { type: string, description: "The message body: JSON as text, or base64 when not UTF-8 (see body_encoding)." }
+            body_encoding: { type: string, enum: [utf8, base64] }
     ErrorInfo:
       type: object
       required: [class, code, message]
@@ -645,8 +916,20 @@ components:
         status: { $ref: "#/components/schemas/RunStatus" }
         stage_index: { type: integer, description: Current (or last) stage index. }
         stage: { type: string }
-        attention: { type: string, description: Why the run needs an operator. }
-        trigger: { type: object, required: [kind], properties: { kind: { type: string, enum: [manual, source, api, retry] }, by: { type: string } } }
+        attention: { $ref: "#/components/schemas/Attention" }
+        trigger: { type: object, required: [kind], properties: { kind: { type: string, enum: [manual, source, schedule, api, retry] }, by: { type: string } } }
+        priority: { $ref: "#/components/schemas/Priority" }
+        labels: { $ref: "#/components/schemas/Labels" }
+        dedup_key: { type: string }
+        queue_reason: { type: string, enum: [max_runs, min_interval, day_budget], description: Why a queued run is not admitted yet. }
+        budget:
+          type: object
+          properties:
+            run_usd: { type: number }
+            warn_usd: { type: number }
+            state: { type: string, enum: [ok, warn, exceeded] }
+        spent_usd: { type: number }
+        usage: { $ref: "#/components/schemas/Usage" }
         created_at: { type: string, format: date-time }
         started_at: { type: string, format: date-time }
         finished_at: { type: string, format: date-time }
@@ -657,8 +940,14 @@ components:
       properties:
         attempt_id: { type: string, format: uuid, description: "Same as attempt.id in the envelope (v2 has no fence; the id is unique per attempt)." }
         number: { type: integer, description: 1-based. }
-        status: { type: string, enum: [scheduled, dispatched, running, succeeded, failed, timed_out, lost, cancelled] }
+        status: { type: string, enum: [scheduled, dispatched, running, waiting, succeeded, failed, timed_out, lost, cancelled] }
         replica_id: { type: string }
+        dispatched_at: { type: string, format: date-time }
+        lease_until: { type: string, format: date-time }
+        deadline: { type: string, format: date-time, description: "started_at + timeout + time spent waiting (and at most the absolute deadline)." }
+        confirmed_at: { type: string, format: date-time }
+        confirmed_until: { type: string, format: date-time }
+        usage: { $ref: "#/components/schemas/Usage" }
         progress: { type: number, minimum: 0, maximum: 1 }
         not_before: { type: string, format: date-time }
         started_at: { type: string, format: date-time }
@@ -666,15 +955,20 @@ components:
         error: { $ref: "#/components/schemas/ErrorInfo" }
     Step:
       type: object
-      required: [stage, stage_index, step_id, module, status, visits, attempts]
+      description: One visit of a step (a stage visited again after a route back has a new row with visit + 1).
+      required: [step_key, stage, stage_index, step_id, module, status, visit, attempts]
       properties:
+        step_key: { type: string, format: uuid }
         stage: { type: string }
         stage_index: { type: integer }
         step_id: { type: string }
         module: { type: string }
         item_index: { type: integer, description: foreach only. }
         status: { $ref: "#/components/schemas/StepStatus" }
-        visits: { type: integer, description: "1 for the first pass, higher after route loops." }
+        visit: { type: integer, description: "1 for the first pass, higher after route loops." }
+        waiting: { $ref: "#/components/schemas/Waiting" }
+        wait_total_seconds: { type: number }
+        usage: { $ref: "#/components/schemas/Usage" }
         started_at: { type: string, format: date-time }
         finished_at: { type: string, format: date-time }
         output: { type: object }
@@ -690,9 +984,10 @@ components:
           type: array
           items:
             type: object
-            required: [after_stage, sha256, created_at, size]
+            required: [after_stage, visit, sha256, created_at, size]
             properties:
               after_stage: { type: integer }
+              visit: { type: integer }
               sha256: { type: string }
               created_at: { type: string, format: date-time }
               size: { type: integer }
@@ -749,8 +1044,9 @@ components:
         id: { type: integer }
         at: { type: string, format: date-time }
         actor: { type: string }
-        action: { type: string, examples: [apply, scale, delete, run.start, run.cancel, run.resume, run.retry, session.create] }
+        action: { type: string, examples: [apply, scale, delete, run.start, run.cancel, run.resume, run.retry, step.retry, step.skip, step.cancel, run.budget, run.priority, dead_letter.redeliver, attempt.confirm, session.create] }
         target: { type: string }
+        comment: { type: string }
         details: { type: object }
     StreamEventType:
       type: string
@@ -758,9 +1054,11 @@ components:
         - run.created
         - run.updated
         - run.finished
+        - run.budget_warning
         - step.dispatched
         - step.started
         - step.progress
+        - step.waiting
         - step.succeeded
         - step.failed
         - step.skipped
@@ -790,6 +1088,9 @@ components:
         stage_index: { type: integer }
         stage: { type: string }
         error: { $ref: "#/components/schemas/ErrorInfo" }
+        attention: { $ref: "#/components/schemas/Attention" }
+        priority: { type: integer }
+        spent_usd: { type: number }
         at: { type: string, format: date-time }
     StepEvent:
       type: object
@@ -804,8 +1105,11 @@ components:
         item_index: { type: integer }
         attempt: { type: integer, description: Attempt number. }
         attempt_id: { type: string, format: uuid }
+        step_key: { type: string, format: uuid }
+        visit: { type: integer }
         progress: { type: number, minimum: 0, maximum: 1 }
-        message: { type: string, description: step.progress only. }
+        message: { type: string, description: step.progress and step.waiting. }
+        waiting: { $ref: "#/components/schemas/Waiting" }
         error: { $ref: "#/components/schemas/ErrorInfo" }
         at: { type: string, format: date-time }
     NameEvent:
