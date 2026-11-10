@@ -506,7 +506,7 @@ stateDiagram-v2
 ### 7.3 Real-time для админки
 - **SSE** `GET /api/v1/stream?topics=runs,steps,modules,metrics`. Поток односторонний, переподключение со встроенным `Last-Event-ID` (это `events.id`), проходит через любые прокси. WebSocket не нужен, потому что команды идут обычным REST.
 - Источник событий — таблица `events`. Пишущая транзакция делает `pg_notify('mf_events', id)`, а каждый экземпляр gateway держит LISTEN и раздаёт события своим клиентам. Так работает и с несколькими репликами.
-- Раз в 1 с отправляется событие `metrics.tick`: rate, p50/p95 и in-flight по модулям из скользящих окон в памяти ядра. Живые плитки и 3D работают **без Prometheus**. Prometheus нужен для истории графиков: gateway проксирует `/api/v1/metrics/query` с allowlist запросов.
+- Раз в 1 с отправляется событие `metrics.tick`: rate, p50/p95 и in-flight по модулям из скользящих окон в памяти ядра. Живые плитки и 3D работают **без Prometheus**. Prometheus нужен для истории графиков: gateway отдаёт ряды модуля через `/api/v1/modules/{name}/metrics` (фиксированные mf_*-запросы к Prometheus, произвольный PromQL не принимается). Точный формат API и SSE: `api/openapi.yaml`.
 - При пропуске событий (`Last-Event-ID` старше retention) клиент получает `reset` и заново запрашивает снапшот `GET /api/v1/overview`.
 
 ---

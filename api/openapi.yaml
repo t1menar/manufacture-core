@@ -1,25 +1,29 @@
 openapi: 3.1.0
 info:
   title: Manufacture gateway API
-  version: 0.2.0
+  version: 0.3.0
   summary: REST and live event stream of the Manufacture core.
   description: |
     The gateway role of `manufacture serve` exposes this API on `MF_LISTEN_ADDR` under `/api/v1`,
     the admin panel under `/`, and probes at `/healthz`, `/readyz`, `/metrics`.
 
     **Auth.** Every `/api/v1` call needs the admin token (`MF_ADMIN_TOKEN`), sent either as
-    `Authorization: Bearer <token>` or as the `mf_session` cookie that `POST /api/v1/session` sets
-    (the browser `EventSource` cannot send headers). One token, one role (admin) for now.
+    `Authorization: Bearer <token>` or as the `mf_session` cookie that `POST /api/v1/session` sets.
+    One token, one role (admin) for now.
 
-    **Errors** are `application/problem+json` (RFC 9457) with a stable `code`.
+    **Errors** are `application/problem+json` (RFC 9457) with a stable `code`; 422 responses
+    also carry `errors[]` (`path`, `line`, `message`, ...).
 
     **Pagination.** List endpoints take `limit` (1-200, default 50) and an opaque `cursor`
     and return `next_cursor` when more items exist.
 
-    **Live data.** `GET /api/v1/stream` is a Server-Sent Events stream. Each event has
-    `id` (monotonic, resumable via `Last-Event-ID`), `event` (the type) and `data` (JSON, see `StreamEvent`).
-    A client that falls too far behind gets `event: reset` and must reload snapshots
-    (`/overview`, `/pipelines/{name}/conveyor`). Comment lines (`: ping`) are sent every 15 s.
+    **Live data.** `GET /api/v1/stream` is a Server-Sent Events stream (works with `EventSource`
+    via the cookie, or with `fetch` and the Bearer header). Each frame has `id` (monotonic,
+    resumable via `Last-Event-ID`; absent on `metrics.tick`, which is not stored), `event`
+    (one of `StreamEventType`) and `data` (the payload JSON; see the `x-sse-payloads` map of
+    `StreamEventType`). A client that resumes from an id that is no longer kept gets
+    `event: reset` and must reload snapshots (`/overview`, `/pipelines/{name}/conveyor`).
+    Comment lines (`: ping`) are sent every 15 s.
   license:
     name: MIT
     identifier: MIT
@@ -55,13 +59,13 @@ paths:
       responses:
         "200": { description: Ready., content: { application/json: { schema: { $ref: "#/components/schemas/Readiness" } } } }
         "503": { description: Not ready., content: { application/json: { schema: { $ref: "#/components/schemas/Readiness" } } } }
-  /api/v1/info:
+  /api/v1/system:
     get:
-      operationId: getInfo
+      operationId: getSystem
       tags: [system]
-      summary: Version, contract version and runtime driver
+      summary: Version, contract version, runtime driver, roles and limits
       responses:
-        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Info" } } } }
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/System" } } } }
         default: { $ref: "#/components/responses/Problem" }
   /api/v1/session:
     post:
@@ -104,7 +108,7 @@ paths:
           application/json: { schema: { type: object } }
       responses:
         "200": { description: "Applied (or would be, for dry_run).", content: { application/json: { schema: { $ref: "#/components/schemas/ApplyResult" } } } }
-        "422": { description: Validation failed; nothing applied., content: { application/json: { schema: { $ref: "#/components/schemas/ApplyResult" } } } }
+        "422": { description: "Validation failed; nothing applied. Problem with code validation_failed and errors[].", content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } } }
         default: { $ref: "#/components/responses/Problem" }
   /api/v1/modules:
     get:
@@ -114,7 +118,7 @@ paths:
       responses:
         "200":
           description: OK
-          content: { application/json: { schema: { type: object, required: [items], properties: { items: { type: array, items: { $ref: "#/components/schemas/ModuleSummary" } } } } } }
+          content: { application/json: { schema: { type: object, required: [items], properties: { items: { type: array, items: { $ref: "#/components/schemas/ModuleStatus" } } } } } }
         default: { $ref: "#/components/responses/Problem" }
   /api/v1/modules/{name}:
     parameters: [{ $ref: "#/components/parameters/Name" }]
@@ -144,7 +148,7 @@ paths:
         "404": { $ref: "#/components/responses/Problem" }
   /api/v1/modules/{name}/scale:
     parameters: [{ $ref: "#/components/parameters/Name" }]
-    put:
+    post:
       operationId: scaleModule
       tags: [resources]
       summary: Set a fixed replica count (creates a new revision)
@@ -167,6 +171,19 @@ paths:
         "200": { description: "Log lines, oldest first.", content: { text/plain: { schema: { type: string } } } }
         "404": { $ref: "#/components/responses/Problem" }
         "501": { $ref: "#/components/responses/Problem" }
+  /api/v1/modules/{name}/metrics:
+    parameters: [{ $ref: "#/components/parameters/Name" }]
+    get:
+      operationId: getModuleMetrics
+      tags: [live]
+      summary: Time series of one module (the gateway runs fixed mf_* queries against Prometheus)
+      parameters:
+        - { name: range, in: query, schema: { type: string, enum: [15m, 1h, 6h, 24h, 7d], default: 1h } }
+        - { name: step, in: query, description: "Go duration, 5s..1h; default range/120.", schema: { type: string } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/ModuleMetrics" } } } }
+        "404": { $ref: "#/components/responses/Problem" }
+        "503": { $ref: "#/components/responses/Problem" }
   /api/v1/pipelines:
     get:
       operationId: listPipelines
@@ -247,6 +264,7 @@ paths:
       parameters:
         - { name: pipeline, in: query, schema: { type: string } }
         - { name: status, in: query, schema: { $ref: "#/components/schemas/RunStatus" } }
+        - { name: q, in: query, description: "Prefix of the run id, or text in the attention reason.", schema: { type: string, maxLength: 200 } }
         - { $ref: "#/components/parameters/Limit" }
         - { $ref: "#/components/parameters/Cursor" }
       responses:
@@ -283,6 +301,27 @@ paths:
         "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Run" } } } }
         "404": { $ref: "#/components/responses/Problem" }
         "409": { $ref: "#/components/responses/Problem" }
+  /api/v1/runs/{id}/retry:
+    parameters: [{ $ref: "#/components/parameters/ID" }]
+    post:
+      operationId: retryRun
+      tags: [runs]
+      summary: Start a new run of the same pipeline revision with the same initial data
+      responses:
+        "201": { description: The new run (trigger.kind = retry)., content: { application/json: { schema: { $ref: "#/components/schemas/Run" } } } }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+  /api/v1/runs/{id}/snapshots/{after_stage}:
+    parameters:
+      - { $ref: "#/components/parameters/ID" }
+      - { name: after_stage, in: path, required: true, description: Stage index (0-based) after which the context was saved., schema: { type: integer, minimum: 0 } }
+    get:
+      operationId: getRunSnapshot
+      tags: [runs]
+      summary: Run context saved after a stage (blob references are not resolved)
+      responses:
+        "200": { description: The context JSON., content: { application/json: { schema: { type: object } } } }
+        "404": { $ref: "#/components/responses/Problem" }
   /api/v1/runs/{id}/events:
     parameters: [{ $ref: "#/components/parameters/ID" }]
     get:
@@ -293,7 +332,7 @@ paths:
       responses:
         "200":
           description: OK
-          content: { application/json: { schema: { type: object, required: [items], properties: { items: { type: array, items: { $ref: "#/components/schemas/StreamEvent" } }, next_cursor: { type: string } } } } }
+          content: { application/json: { schema: { type: object, required: [items], properties: { items: { type: array, items: { $ref: "#/components/schemas/StoredEvent" } }, next_cursor: { type: string } } } } }
         "404": { $ref: "#/components/responses/Problem" }
   /api/v1/blobs/presign:
     get:
@@ -326,26 +365,15 @@ paths:
           schema: { type: string, example: "runs,steps,modules,metrics,resources" }
         - { name: pipeline, in: query, description: Only events of this pipeline (module and metrics events are not filtered)., schema: { type: string } }
         - { name: Last-Event-ID, in: header, description: Resume after this event id., schema: { type: string } }
+        - { name: last_event_id, in: query, description: Same as the header (for clients that cannot set headers)., schema: { type: string } }
       responses:
         "200":
           description: |
-            `text/event-stream`. Each message: `id: <n>`, `event: <StreamEvent.type>`, `data: <StreamEvent JSON>`.
-          content: { text/event-stream: { schema: { $ref: "#/components/schemas/StreamEvent" } } }
+            `text/event-stream`. Each frame: `id: <n>` (not on metrics.tick), `event: <StreamEventType>`,
+            `data: <payload JSON>`. Topics: runs (run.*), steps (step.*), modules (module.*),
+            resources (pipeline.*), metrics (metrics.tick); reset is always sent.
+          content: { text/event-stream: { schema: { type: string } } }
         "401": { $ref: "#/components/responses/Problem" }
-  /api/v1/metrics/query:
-    get:
-      operationId: queryMetrics
-      tags: [live]
-      summary: Range query proxied to Prometheus (allow-listed mf_* expressions)
-      parameters:
-        - { name: query, in: query, required: true, schema: { type: string } }
-        - { name: start, in: query, required: true, schema: { type: string, format: date-time } }
-        - { name: end, in: query, required: true, schema: { type: string, format: date-time } }
-        - { name: step, in: query, schema: { type: string, default: 15s } }
-      responses:
-        "200": { description: Prometheus range-query response body., content: { application/json: { schema: { type: object } } } }
-        "400": { $ref: "#/components/responses/Problem" }
-        "503": { $ref: "#/components/responses/Problem" }
   /api/v1/audit:
     get:
       operationId: listAudit
@@ -386,40 +414,49 @@ components:
         type: { type: string, example: about:blank }
         title: { type: string }
         status: { type: integer }
-        code: { type: string, description: "Stable machine code: not_found, conflict, invalid_request, unauthorized, validation_failed, not_implemented, internal." }
+        code: { type: string, description: "Stable machine code: not_found, conflict, invalid_request, unauthorized, validation_failed, not_implemented, unavailable, internal." }
         detail: { type: string }
         instance: { type: string }
+        errors: { type: array, description: Present on validation_failed., items: { $ref: "#/components/schemas/Diagnostic" } }
     Readiness:
       type: object
       required: [ready, checks]
       properties:
         ready: { type: boolean }
         checks: { type: object, additionalProperties: { type: string, description: '"ok" or the error' } }
-    Info:
+    System:
       type: object
-      required: [version, contract_version, runtime, roles]
+      required: [version, contract_version, driver, roles, limits]
       properties:
         version: { type: string }
         commit: { type: string }
         contract_version: { type: string }
-        runtime: { type: string, enum: [docker, kubernetes, external] }
+        driver: { type: string, enum: [docker, kubernetes, external] }
         roles: { type: array, items: { type: string, enum: [engine, controller, gateway] } }
+        limits:
+          type: object
+          required: [max_message_bytes, inline_max_bytes, max_apply_bytes]
+          properties:
+            max_message_bytes: { type: integer }
+            inline_max_bytes: { type: integer }
+            max_apply_bytes: { type: integer }
+            max_foreach_items: { type: integer }
     Diagnostic:
       type: object
-      required: [severity, source, message]
+      required: [severity, message]
       properties:
         severity: { type: string, enum: [error, warning] }
-        source: { type: string }
+        source: { type: string, description: File name or "request". }
         line: { type: integer }
         column: { type: integer }
-        resource: { type: string }
-        path: { type: string }
+        resource: { type: string, description: "Kind/name, e.g. Pipeline/hello." }
+        path: { type: string, description: "JSON pointer inside the document, e.g. /spec/stages/0/steps/1." }
         message: { type: string }
     ApplyResult:
       type: object
-      required: [applied, results, diagnostics]
+      required: [applied, results]
       properties:
-        applied: { type: boolean, description: false for dry_run or on errors }
+        applied: { type: boolean, description: false for dry_run }
         results:
           type: array
           items:
@@ -430,15 +467,16 @@ components:
               name: { type: string }
               action: { type: string, enum: [created, updated, unchanged] }
               revision: { type: integer }
-        diagnostics: { type: array, items: { $ref: "#/components/schemas/Diagnostic" } }
+        warnings: { type: array, items: { $ref: "#/components/schemas/Diagnostic" } }
     Revision:
       type: object
-      required: [revision, spec_hash, applied_at, source]
+      required: [revision, spec_hash, applied_at, applied_by, source]
       properties:
         revision: { type: integer }
         spec_hash: { type: string }
         applied_at: { type: string, format: date-time }
-        source: { type: string }
+        applied_by: { type: string }
+        source: { type: string, enum: [cli, ui, bootstrap, api] }
         current: { type: boolean }
     RevisionList:
       type: object
@@ -448,161 +486,249 @@ components:
     LiveMetrics:
       type: object
       description: Rolling 1-minute window computed by the core.
-      required: [in_flight, queue_depth, rate_per_min, error_rate, p50_ms, p95_ms]
+      required: [rate, p50_ms, p95_ms, in_flight, queue_depth, error_rate]
       properties:
-        in_flight: { type: integer }
-        queue_depth: { type: integer, description: -1 when unknown }
-        rate_per_min: { type: number, description: Finished attempts per minute. }
-        error_rate: { type: number, minimum: 0, maximum: 1 }
+        rate: { type: number, description: Finished attempts per second. }
         p50_ms: { type: number }
         p95_ms: { type: number }
+        in_flight: { type: integer }
+        queue_depth: { type: integer, description: -1 when unknown }
+        error_rate: { type: number, minimum: 0, maximum: 1 }
+    Condition:
+      type: object
+      required: [type, status]
+      properties:
+        type: { type: string, examples: [Available, ImagePulled, ContractCompatible, Progressing] }
+        status: { type: string, enum: ["True", "False", "Unknown"] }
+        reason: { type: string }
+        message: { type: string }
+        since: { type: string, format: date-time }
     Replica:
       type: object
       required: [id, state]
       properties:
         id: { type: string }
         state: { type: string, enum: [starting, ready, unhealthy, stopped] }
-        sdk: { type: string }
+        sdk_version: { type: string }
         version: { type: string }
         last_seen_at: { type: string, format: date-time }
         in_flight: { type: integer }
-    ModuleSummary:
+    ModuleStatus:
       type: object
-      required: [name, revision, image, runtime, health, replicas, live]
+      description: Module with live status (list item, module.status SSE payload).
+      required: [name, revision, image, runtime, driver, replicas, health, conditions, queue_depth, dlq_depth, in_flight, live]
       properties:
         name: { type: string }
         revision: { type: integer }
         image: { type: string }
         runtime: { type: string, enum: [auto, external] }
-        health: { $ref: "#/components/schemas/Health" }
+        driver: { type: string, enum: [docker, kubernetes, external] }
         replicas: { type: object, required: [desired, ready], properties: { desired: { type: integer }, ready: { type: integer } } }
+        health: { $ref: "#/components/schemas/Health" }
+        conditions: { type: array, items: { $ref: "#/components/schemas/Condition" } }
+        last_heartbeat_at: { type: string, format: date-time }
+        queue_depth: { type: integer, description: -1 when unknown }
+        dlq_depth: { type: integer, description: Dead letters whose source is this module. }
+        in_flight: { type: integer }
+        sdk_version: { type: string }
+        contract_version: { type: string }
         live: { $ref: "#/components/schemas/LiveMetrics" }
     ModuleDetail:
       allOf:
-        - $ref: "#/components/schemas/ModuleSummary"
+        - $ref: "#/components/schemas/ModuleStatus"
         - type: object
-          required: [spec, replica_list]
+          required: [spec, yaml, replica_list, updated_at]
           properties:
             spec: { type: object, description: The applied Module document (schemas/v1/module.schema.json). }
+            yaml: { type: string, description: The applied document as YAML. }
             replica_list: { type: array, items: { $ref: "#/components/schemas/Replica" } }
-            conditions: { type: array, items: { type: string }, description: Human-readable problems reported by the runtime. }
             manifest: { type: object, description: Last module.online payload. }
+            updated_at: { type: string, format: date-time }
+            applied_by: { type: string }
+            source: { type: string }
+            managed_by: { type: string }
+    ModuleMetrics:
+      type: object
+      required: [range, step, series]
+      properties:
+        range: { type: string }
+        step: { type: string }
+        series:
+          type: object
+          description: Each series is a list of [unix_seconds, value] pairs.
+          required: [throughput, latency_p50_ms, latency_p95_ms, errors, in_flight, queue_depth]
+          properties:
+            throughput: { $ref: "#/components/schemas/Series" }
+            latency_p50_ms: { $ref: "#/components/schemas/Series" }
+            latency_p95_ms: { $ref: "#/components/schemas/Series" }
+            errors: { $ref: "#/components/schemas/Series" }
+            in_flight: { $ref: "#/components/schemas/Series" }
+            queue_depth: { $ref: "#/components/schemas/Series" }
+    Series:
+      type: array
+      items: { type: array, prefixItems: [{ type: number }, { type: number }], minItems: 2, maxItems: 2 }
+    StageView:
+      type: object
+      description: Compiled stage (step ids filled in) so clients do not re-derive them.
+      required: [name, index, kind, lanes]
+      properties:
+        name: { type: string }
+        index: { type: integer }
+        kind: { type: string, enum: [single, parallel, foreach] }
+        lanes:
+          type: array
+          items: { type: object, required: [step_id, module], properties: { step_id: { type: string }, module: { type: string } } }
+        routes:
+          type: array
+          items: { type: object, required: [goto], properties: { goto: { type: string }, max_visits: { type: integer } } }
+    RunCounters:
+      type: object
+      required: [active, queued, needs_attention]
+      properties:
+        active: { type: integer }
+        queued: { type: integer }
+        needs_attention: { type: integer }
+        succeeded_24h: { type: integer }
+        failed_24h: { type: integer }
     PipelineSummary:
       type: object
-      required: [name, revision, stages, runs]
+      required: [name, revision, stages, updated_at, runs]
       properties:
         name: { type: string }
         revision: { type: integer }
-        stages: { type: integer }
-        runs: { type: object, required: [active, queued, needs_attention, succeeded, failed], properties: { active: { type: integer }, queued: { type: integer }, needs_attention: { type: integer }, succeeded: { type: integer }, failed: { type: integer } } }
+        stages: { type: array, items: { $ref: "#/components/schemas/StageView" } }
+        updated_at: { type: string, format: date-time }
+        managed_by: { type: string }
+        runs: { $ref: "#/components/schemas/RunCounters" }
     PipelineDetail:
       type: object
-      required: [name, revision, spec]
+      required: [name, revision, yaml, spec, stages, updated_at, applied_by, source]
       properties:
         name: { type: string }
         revision: { type: integer }
-        spec: { type: object, description: The applied Pipeline document with step ids filled in. }
-        applied_at: { type: string, format: date-time }
+        yaml: { type: string }
+        spec: { type: object, description: The applied Pipeline document. }
+        stages: { type: array, items: { $ref: "#/components/schemas/StageView" } }
+        updated_at: { type: string, format: date-time }
+        applied_by: { type: string }
+        source: { type: string }
+        managed_by: { type: string }
     RunStatus: { type: string, enum: [queued, running, succeeded, failed, needs_attention, cancelled] }
     StepStatus: { type: string, enum: [pending, dispatched, running, succeeded, failed, skipped, cancelled] }
+    ErrorInfo:
+      type: object
+      required: [class, code, message]
+      properties:
+        class: { type: string, enum: [transient, fatal, attention, timeout, lost, cancelled] }
+        code: { type: string }
+        message: { type: string }
     Run:
       type: object
-      required: [id, pipeline, revision, status, created_at]
+      required: [id, pipeline, revision, status, stage_index, trigger, created_at]
       properties:
         id: { type: string, format: uuid }
         pipeline: { type: string }
         revision: { type: integer }
         status: { $ref: "#/components/schemas/RunStatus" }
-        stage: { type: string, description: Current stage. }
+        stage_index: { type: integer, description: Current (or last) stage index. }
+        stage: { type: string }
         attention: { type: string, description: Why the run needs an operator. }
-        trigger: { type: object, properties: { kind: { type: string, enum: [manual, source, schedule, api] }, by: { type: string } } }
+        trigger: { type: object, required: [kind], properties: { kind: { type: string, enum: [manual, source, api, retry] }, by: { type: string } } }
         created_at: { type: string, format: date-time }
         started_at: { type: string, format: date-time }
         finished_at: { type: string, format: date-time }
+        error: { $ref: "#/components/schemas/ErrorInfo" }
     Attempt:
       type: object
-      required: [id, number, status]
+      required: [attempt_id, number, status]
       properties:
-        id: { type: string, format: uuid }
-        number: { type: integer }
+        attempt_id: { type: string, format: uuid, description: "Same as attempt.id in the envelope (v2 has no fence; the id is unique per attempt)." }
+        number: { type: integer, description: 1-based. }
         status: { type: string, enum: [scheduled, dispatched, running, succeeded, failed, timed_out, lost, cancelled] }
         replica_id: { type: string }
-        error: { type: object, properties: { class: { type: string }, code: { type: string }, message: { type: string } } }
-        progress: { type: number }
+        progress: { type: number, minimum: 0, maximum: 1 }
         not_before: { type: string, format: date-time }
         started_at: { type: string, format: date-time }
         finished_at: { type: string, format: date-time }
+        error: { $ref: "#/components/schemas/ErrorInfo" }
     Step:
       type: object
-      required: [id, stage, step, module, status, attempts]
+      required: [stage, stage_index, step_id, module, status, visits, attempts]
       properties:
-        id: { type: string, format: uuid }
         stage: { type: string }
-        step: { type: string }
+        stage_index: { type: integer }
+        step_id: { type: string }
         module: { type: string }
-        item_index: { type: integer }
-        visit: { type: integer, description: "1 for the first pass, higher after route loops." }
+        item_index: { type: integer, description: foreach only. }
         status: { $ref: "#/components/schemas/StepStatus" }
+        visits: { type: integer, description: "1 for the first pass, higher after route loops." }
+        started_at: { type: string, format: date-time }
+        finished_at: { type: string, format: date-time }
         output: { type: object }
         attempts: { type: array, items: { $ref: "#/components/schemas/Attempt" } }
     RunDetail:
-      allOf:
-        - $ref: "#/components/schemas/Run"
-        - type: object
-          required: [data, steps]
-          properties:
-            data: { type: object, description: Current run data (blob references are not resolved). }
-            steps: { type: array, items: { $ref: "#/components/schemas/Step" } }
+      type: object
+      required: [run, steps, context, snapshots]
+      properties:
+        run: { $ref: "#/components/schemas/Run" }
+        steps: { type: array, items: { $ref: "#/components/schemas/Step" } }
+        context: { type: object, description: Current run data (blob references are not resolved). }
+        snapshots:
+          type: array
+          items:
+            type: object
+            required: [after_stage, sha256, created_at, size]
+            properties:
+              after_stage: { type: integer }
+              sha256: { type: string }
+              created_at: { type: string, format: date-time }
+              size: { type: integer }
     Conveyor:
       type: object
-      required: [pipeline, revision, stages, routes, items]
+      required: [pipeline, revision, stages, items]
       properties:
         pipeline: { type: string }
         revision: { type: integer }
         stages:
           type: array
           items:
-            type: object
-            required: [name, index, kind, lanes]
-            properties:
-              name: { type: string }
-              index: { type: integer }
-              kind: { type: string, enum: [single, parallel, foreach] }
-              lanes:
-                type: array
-                description: Parallel modules of the stage share its position on the belt.
-                items:
-                  type: object
-                  required: [step, module, health, replicas, live]
-                  properties:
-                    step: { type: string }
-                    module: { type: string }
-                    health: { $ref: "#/components/schemas/Health" }
-                    replicas: { type: object, required: [desired, ready], properties: { desired: { type: integer }, ready: { type: integer } } }
-                    live: { $ref: "#/components/schemas/LiveMetrics" }
-        routes:
-          type: array
-          items: { type: object, required: [from, to], properties: { from: { type: string }, to: { type: string }, max_visits: { type: integer } } }
+            allOf:
+              - $ref: "#/components/schemas/StageView"
+              - type: object
+                required: [live]
+                properties:
+                  live:
+                    type: object
+                    description: Per lane (by step_id).
+                    additionalProperties:
+                      type: object
+                      required: [health, replicas, metrics]
+                      properties:
+                        health: { $ref: "#/components/schemas/Health" }
+                        replicas: { type: object, required: [desired, ready], properties: { desired: { type: integer }, ready: { type: integer } } }
+                        metrics: { $ref: "#/components/schemas/LiveMetrics" }
         items:
           type: array
-          description: Runs in flight (at most 2000; older ones are counted in overflow).
+          description: Runs in flight (at most 2000; the rest are counted in overflow).
           items:
             type: object
-            required: [run_id, stage, state]
+            required: [run_id, stage_index, state]
             properties:
               run_id: { type: string, format: uuid }
-              stage: { type: string }
-              lanes: { type: array, items: { type: string }, description: Step ids being processed. }
+              stage_index: { type: integer }
+              step_ids: { type: array, items: { type: string }, description: Steps being processed. }
               state: { type: string, enum: [queued, moving, processing, failed, attention] }
               since: { type: string, format: date-time }
         overflow: { type: integer }
+        last_event_id: { type: string }
     Overview:
       type: object
-      required: [runs, pipelines, modules]
+      required: [pipelines, modules, runs, last_event_id]
       properties:
-        runs: { type: object, required: [active, queued, needs_attention, succeeded_24h, failed_24h], properties: { active: { type: integer }, queued: { type: integer }, needs_attention: { type: integer }, succeeded_24h: { type: integer }, failed_24h: { type: integer } } }
         pipelines: { type: array, items: { $ref: "#/components/schemas/PipelineSummary" } }
-        modules: { type: array, items: { $ref: "#/components/schemas/ModuleSummary" } }
+        modules: { type: array, items: { $ref: "#/components/schemas/ModuleStatus" } }
+        runs: { $ref: "#/components/schemas/RunCounters" }
+        last_event_id: { type: string, description: Pass as Last-Event-ID to /stream to continue from this snapshot. }
     AuditEntry:
       type: object
       required: [id, at, actor, action, target]
@@ -610,28 +736,94 @@ components:
         id: { type: integer }
         at: { type: string, format: date-time }
         actor: { type: string }
-        action: { type: string, examples: [apply, scale, delete, run.start, run.cancel, run.resume] }
+        action: { type: string, examples: [apply, scale, delete, run.start, run.cancel, run.resume, run.retry, session.create] }
         target: { type: string }
         details: { type: object }
-    StreamEvent:
+    StreamEventType:
+      type: string
+      enum:
+        - run.created
+        - run.updated
+        - run.finished
+        - step.dispatched
+        - step.started
+        - step.progress
+        - step.succeeded
+        - step.failed
+        - step.skipped
+        - module.status
+        - module.deleted
+        - pipeline.applied
+        - pipeline.deleted
+        - metrics.tick
+        - reset
+      x-sse-payloads:
+        run.*: RunEvent
+        step.*: StepEvent
+        module.status: ModuleStatus
+        module.deleted: NameEvent
+        pipeline.applied: PipelineEvent
+        pipeline.deleted: NameEvent
+        metrics.tick: MetricsTick
+        reset: "{}"
+    RunEvent:
       type: object
-      description: One live event. `id` is also the SSE id.
+      required: [run_id, pipeline, revision, status, at]
+      properties:
+        run_id: { type: string, format: uuid }
+        pipeline: { type: string }
+        revision: { type: integer }
+        status: { $ref: "#/components/schemas/RunStatus" }
+        stage_index: { type: integer }
+        stage: { type: string }
+        error: { $ref: "#/components/schemas/ErrorInfo" }
+        at: { type: string, format: date-time }
+    StepEvent:
+      type: object
+      required: [run_id, pipeline, stage, stage_index, step_id, module, at]
+      properties:
+        run_id: { type: string, format: uuid }
+        pipeline: { type: string }
+        stage: { type: string }
+        stage_index: { type: integer }
+        step_id: { type: string }
+        module: { type: string }
+        item_index: { type: integer }
+        attempt: { type: integer, description: Attempt number. }
+        attempt_id: { type: string, format: uuid }
+        progress: { type: number, minimum: 0, maximum: 1 }
+        message: { type: string, description: step.progress only. }
+        error: { $ref: "#/components/schemas/ErrorInfo" }
+        at: { type: string, format: date-time }
+    NameEvent:
+      type: object
+      required: [name]
+      properties: { name: { type: string } }
+    PipelineEvent:
+      type: object
+      required: [name, revision]
+      properties: { name: { type: string }, revision: { type: integer } }
+    MetricsTick:
+      type: object
+      required: [ts, modules]
+      properties:
+        ts: { type: integer, description: Unix milliseconds. }
+        modules: { type: object, additionalProperties: { $ref: "#/components/schemas/LiveMetrics" } }
+        runs: { type: object, properties: { active: { type: integer }, queued: { type: integer } } }
+    StoredEvent:
+      type: object
+      description: One entry of a run timeline (same id space as the SSE stream).
       required: [id, type, at, data]
       properties:
-        id: { type: integer }
-        type:
-          type: string
-          enum: [run.created, run.updated, step.updated, attempt.progress, module.updated, resource.applied, resource.deleted, metrics.tick, reset]
+        id: { type: string }
+        type: { $ref: "#/components/schemas/StreamEventType" }
         at: { type: string, format: date-time }
-        pipeline: { type: string }
-        run_id: { type: string, format: uuid }
         data:
-          description: |
-            run.created / run.updated → Run.
-            step.updated → Step without attempts plus `attempt` (Attempt).
-            attempt.progress → {step_id, attempt_id, progress, message}.
-            module.updated → ModuleSummary.
-            resource.applied / resource.deleted → {kind, name, revision}.
-            metrics.tick (every second) → {modules: {<name>: LiveMetrics}, runs: {active, queued}}.
-            reset → {} (reload snapshots).
-          type: object
+          description: The SSE payload of that event (by type, see StreamEventType x-sse-payloads).
+          anyOf:
+            - $ref: "#/components/schemas/RunEvent"
+            - $ref: "#/components/schemas/StepEvent"
+            - $ref: "#/components/schemas/ModuleStatus"
+            - $ref: "#/components/schemas/NameEvent"
+            - $ref: "#/components/schemas/PipelineEvent"
+            - $ref: "#/components/schemas/MetricsTick"

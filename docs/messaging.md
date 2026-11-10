@@ -1,4 +1,4 @@
-# Протокол модулей (contract 0.2.0)
+# Протокол модулей (contract 0.2.1)
 
 Документ для авторов SDK и модулей. Машиночитаемая часть:
 - `schemas/envelope/v2/envelope.schema.json`: конверт и payload каждого типа;
