@@ -21,7 +21,7 @@ func newGateway(t *testing.T) *httptest.Server {
 	t.Helper()
 	s := newStore(t)
 	gw := gateway.New(gateway.Options{Store: s, TokenHash: gateway.TokenHash(testToken),
-		System: gateway.System{Version: "test", ContractVersion: "0.2.1", Driver: "docker", Roles: []string{"gateway"}}})
+		System: gateway.System{Version: "test", ContractVersion: "0.3.0", Driver: "docker", Roles: []string{"gateway"}}})
 	srv := httptest.NewServer(gw)
 	t.Cleanup(srv.Close)
 	return srv

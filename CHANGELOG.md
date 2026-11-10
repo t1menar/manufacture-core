@@ -2,6 +2,26 @@
 
 ## Contract
 
+### 0.3.0 (2026-11-10)
+Breaking (allowed before 1.0); implements the module team requirements R1–R10 (`docs/adr/0013`, `0014`).
+- Envelope: new `step.waiting` (module -> core; `reason`, `seq`, `expected_by`, `usage`), `run.started` and
+  `run.finished` (core -> `mf.notify.<module>`), `run.rejected` (core -> source replicas).
+- `step.requested`: `step_key` = uuid5(STEP_NS, "<run_id>:<stage>:<step_id>:<item_index|->:<visit>"), `visit`,
+  `timeout_seconds` (counted from the first heartbeat), `deadline` now an optional ceiling, `budget`, `priority`, `labels`.
+- `usage {cost_usd, tokens}` (cumulative per attempt) on heartbeat, waiting, succeeded, failed; `step.failed`
+  `recommendation`, `details`; `step.cancel` reasons `budget`, `operator`; `run.requested` `priority`, `labels`;
+  `module.online` `min_budget_usd`; reserved codes `module_shutdown`, `budget`, `invalid_blob_ref`, `data_too_large`.
+- blob-ref: `sha256` required, `keep`, `name`; every `$blob` object in a payload is validated.
+- Test vectors: `testdata/envelope/step_key.json`, `testdata/envelope/message_ids.json`.
+- Pipeline: `priority`, `budget {run_usd, warn_usd, day_usd}`, `concurrency.min_interval` (gap between run starts) and
+  `count_waiting`, `context.max_bytes`; step `on_timeout` (retry|fail|attention), `on_cancel`, `wait.timeout`,
+  `min_budget_usd`. Module: `subscribe` (`run.started`, `run.finished`, optionally per pipeline), `min_budget_usd`.
+  CEL: `visit`, `steps.<id>.visits[n]`, `.last`, `.visit`.
+- Gateway API 0.4.0: `POST /attempts/{id}/confirm` (module token), operator actions with `comment`
+  (`steps/{step_key}/retry|skip|cancel`, `PATCH runs/{id}/budget|priority`), `/dead-letters`, `/usage`, statuses
+  `waiting` / `waiting_human`, SSE `step.waiting`, `run.budget_warning`, snapshots by visit.
+- `docs/messaging.md` rewritten for 0.3.0, including the SDK Q&A; `docs/patterns/review-gate.md`.
+
 ### 0.2.1 (2026-11-10)
 - Gateway API 0.3.0, aligned with what the admin panel consumes: `/api/v1/system` (was `/info`),
   `ModuleStatus` (conditions, queue/DLQ depth, SDK and contract versions), `StageView` in pipelines,

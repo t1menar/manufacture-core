@@ -214,7 +214,7 @@ Controller — это цикл reconcile раз в 5 с плюс реакция 
 - **Pipeline** — граф стадий. Хранится ревизиями, каждая ревизия неизменяема.
 - **Run** — один запуск пайплайна, жёстко привязанный к ревизии (снапшот, как `pipeline_snapshot` в v1).
 - **Stage** — позиция на конвейере. Стадия завершена, когда завершены все её шаги (fan-in).
-- **Step** — вызов модуля внутри стадии. **Attempt** — попытка шага, со своим fence.
+- **Step** — вызов модуля внутри стадии. **Attempt** — попытка шага с уникальным `attempt.id`; визит шага (заход в стадию) адресуется `step_key`, общим для всех его попыток (contract 0.3.0, `docs/messaging.md` §4.5).
 
 ### 3.2 Виды стадий
 | Вид | YAML | Семантика |
@@ -222,26 +222,31 @@ Controller — это цикл reconcile раз в 5 с плюс реакция 
 | Один шаг | `step: {module: x}` | последовательное выполнение |
 | Параллельные разные модули | `parallel: [{id: a, module: x}, {id: b, module: y}]` | все стартуют одновременно; `join.mode: all` (по умолчанию), `any`, `quorum: N` |
 | Map по списку | `foreach: "data.tiles"`, `step: {module: x}`, `max_parallel: 8` | по шагу на элемент; результаты собираются в массив по индексу |
-| Ожидание человека | обычный шаг модуля с большим `timeout` (например review) | ядро не знает, что ждёт человек, это просто долгий шаг с lease |
+| Ожидание человека или сервиса | шаг с `wait: {timeout: 7d}` и `on_timeout: attention` (например review) | модуль шлёт `step.waiting`: lease и таймаут на паузе, run в `waiting_human`, слот `max_runs` не занят; ответ приходит позже из любой реплики (ADR-0014, `docs/patterns/review-gate.md`) |
 
 ### 3.3 Условия и переходы
 - `when:` на шаге или стадии — CEL-выражение (`google/cel-go`, компилируется при apply). Если результат `false`, шаг получает статус `skipped`.
 - `routes:` на стадии — список `{when, goto, max_visits}`. Первое истинное правило переносит run на указанную стадию. Так выражается цикл «ревью отклонено → доработка» без кода в ядре, а `max_visits` защищает от бесконечного цикла. При превышении run уходит в `needs_attention`.
-- В CEL доступны `data` (общий контекст), `steps.<id>.output`, `run.trigger`, `attempt`.
+- В CEL доступны `data` (общий контекст), `steps.<id>.output` (последний визит), `steps.<id>.visits[n]`, `steps.<id>.last`, `steps.<id>.visit`, `visit` (номер текущего визита стадии), `run.trigger`, `attempt` (§5.3a).
+- `max_visits` считается на стадию-цель: суммарное число заходов в неё по всем правилам, ведущим туда. Правила с разными `max_visits` для одной цели — ошибка валидации; при превышении run уходит в `needs_attention` (`max_visits_exceeded`).
 
 ### 3.4 Надёжность шага
 ```yaml
 retry:   {max_attempts: 3, backoff: exponential, initial: 2s, max: 5m, jitter: true, on_errors: [transient, timeout, lost]}  # не `on`: YAML 1.1 читает его как true
-timeout: 30m      # общий бюджет попытки
+timeout: 30m      # бюджет исполнения: от первого heartbeat до результата, без времени в waiting
 lease:   60s      # без heartbeat дольше lease → attempt lost → retry
+on_timeout: retry # retry | fail | attention; действует и на timeout, и на wait.timeout
 ```
 - Классы ошибок из SDK: `transient` (ретрай), `fatal` (run `failed`, если стадия не `optional: true`), `attention` (run в `needs_attention`, оператор решает в UI).
 - Следующая попытка ставится с `not_before` и backoff (П#10).
-- Каждая попытка хранит **полный неизменяемый запрос**, поэтому retry, takeover и retry из UI отправляют ровно тот же spec и новый fence (П#2–П#6 закрываются конструктивно).
+- Каждая попытка хранит **полный неизменяемый запрос**, поэтому retry, takeover и retry из UI отправляют тот же запрос с новым `attempt.id` (тот же `step_key`) (П#2–П#6 закрываются конструктивно).
 - По таймауту или отмене ядро всегда отправляет `step.cancel` (П#8).
+- Перед необратимым действием модуль вызывает `confirm` (ADR-0013). Подтверждённую попытку ядро никогда не ретраит автоматически: по `timeout` или `lost` после `confirmed_until` она уходит в `needs_attention` (`outcome_unknown`).
 
 ### 3.5 Лимиты и admission
-- `pipeline.spec.concurrency.max_runs` ограничивает активные runs пайплайна, остальные ждут в `run_queue` (обобщение `pending_ideas`). Run в `needs_attention` **не занимает** слот: учитываются только `running` (П#1).
+- `pipeline.spec.concurrency.max_runs` ограничивает активные runs пайплайна, остальные ждут в `run_queue` (обобщение `pending_ideas`). Run в `needs_attention` и `waiting_human` **не занимает** слот: учитываются только `running` (П#1; `count_waiting: true` включает `waiting_human`).
+- Очередь упорядочена по `priority DESC, enqueued_at` (`priority` −100..100 из `run.requested`, API или `spec.priority`); `concurrency.min_interval` задаёт минимальный интервал между стартами run пайплайна (`pipeline_admission.last_started_at`).
+- Бюджет `spec.budget {run_usd, warn_usd, day_usd}` считается по `usage.cost_usd`, которое сообщают модули (цены у модулей). `run_usd` → отмена неподтверждённых попыток и `needs_attention` (`budget_exceeded`); `day_usd` → новые run ждут в очереди; `min_budget_usd` модуля или шага → шаг не отправляется при недостатке остатка.
 - Модуль ограничивает нагрузку сам, через `concurrency` (prefetch) × реплики. Очередь в RabbitMQ и есть backpressure.
 
 ### 3.6 Версионирование
@@ -303,25 +308,28 @@ spec:
 Вывод: для команд конкретным модулям и масштабирования репликами RabbitMQ подходит лучше всех, и код v1 переиспользуется. Брокер скрыт за `bus.Bus`, а SDK — за `Transport`, поэтому замена на NATS — это отдельная реализация, а не переписывание. **gRPC не берём**: модулям пришлось бы держать соединение с ядром, а lease, ретраи и балансировку всё равно пришлось бы писать самим.
 
 **Изменение по сравнению с v1:** результаты модули тоже отправляют **через брокер** (`mf.events`), а не HTTP-callback.
-- Модулю нужны только `MF_AMQP_URL` и `MF_S3_*`.
+- Модулю нужны только `MF_AMQP_URL` и `MF_S3_*`, кроме `confirm` для модулей с необратимыми действиями: тем нужны ещё `MF_CORE_URL` и `MF_MODULE_TOKEN` (ADR-0013).
 - У каждого модуля свой пользователь RabbitMQ. Брокер проверяет `user_id` в свойствах сообщения, ядро сверяет его с владельцем attempt, и права на публикацию выдаются только на свои ключи (П#14–П#16).
-- Устаревший fence ядро тихо отбрасывает и пишет метрику `mf_stale_results_total`. Модуль узнаёт об этом из `step.cancel`.
+- Результат неактуальной попытки отбрасывается (`mf_stale_results_total{reason}`); модуль узнаёт об этом из `step.cancel`. Перед необратимым действием — `confirm` (ADR-0013).
 
 ### 5.2 Сообщения (envelope v2)
 Нормативно: `manufacture-core/schemas/envelope/v2/*.json` и `docs/messaging.md` (ADR-0005, ADR-0006). Кратко:
 - конверт: `message_id`, `type`, `schema_version: 2`, `occurred_at`, `producer` (`core` или `module:<name>`), `traceparent`, `run_id`, `attempt{id, number}`, `payload`;
-- **fence из v1 заменён уникальным `attempt.id`**: результат для попытки, которая уже не текущая, ядро отбрасывает;
+- у каждой попытки уникальный `attempt.id`: результат для попытки, которая уже не текущая, ядро отбрасывает (`mf_stale_results_total{reason}`); перед необратимым действием — `confirm` (ADR-0013);
 - `message_id` результата модуль выводит как `uuid5(NS, "<attempt_id>:<type>")`, поэтому повтор дедуплицируется.
 
 | Тип | Направление | Куда | Payload |
 |---|---|---|---|
-| `step.requested` | core → модуль | `mf.commands`, ключ `module.<name>` → очередь `mf.module.<name>` | `{pipeline, revision, stage, step, item_index?, input, config, deadline, lease_seconds, blob_prefix}` |
+| `step.requested` | core → модуль | `mf.commands`, ключ `module.<name>` → очередь `mf.module.<name>` | `{pipeline, revision, stage, step, step_key, visit, item_index?, input, config, timeout_seconds, deadline?, lease_seconds, blob_prefix, budget?, priority, labels}` |
 | `source.trigger` | core → source | та же work-очередь | `{pipeline, trigger_id, data?}` |
-| `step.cancel` | core → все реплики | `mf.control`, ключ `control.<name>` | `{reason: timeout\|lost\|cancelled\|superseded}` |
-| `step.heartbeat` | модуль → core | `mf.events` (ключ = type) → `mf.core.events` | `{progress?, message?}` |
-| `step.succeeded` / `step.failed` | модуль → core | то же | `{output}` / `{class, code, message, retry_after_seconds?}` |
-| `run.requested` | source → core | то же | `{pipeline, dedup_key?, trigger_id?, data}` |
-| `module.online` / `module.heartbeat` / `module.offline` | модуль → core | то же | версия контракта, SDK, `kinds`, схемы / `in_flight` |
+| `step.cancel` | core → все реплики | `mf.control`, ключ `control.<name>` | `{reason: timeout\|lost\|cancelled\|superseded\|budget\|operator}` |
+| `run.rejected` | core → source (все реплики) | `mf.control`, ключ `control.<name>` | `{request_message_id, pipeline, dedup_key?, code, message}` |
+| `step.heartbeat` | модуль → core | `mf.events` (ключ = type) → `mf.core.events` | `{progress?, message?, usage?}` |
+| `step.waiting` | модуль → core | то же | `{reason: human\|external, seq, message?, expected_by?, usage?}` |
+| `step.succeeded` / `step.failed` | модуль → core | то же | `{output, usage?}` / `{class, code, message, retry_after_seconds?, recommendation?, details?, usage?}` |
+| `run.requested` | source → core | то же | `{pipeline, dedup_key?, trigger_id?, data, priority?, labels?}` |
+| `run.started` / `run.finished` | core → подписчик | `mf.commands`, ключ `notify.<name>` → `mf.notify.<name>` | `{pipeline, revision, labels, dedup_key, trigger, …}` / `+status, error?, usage, data\|data_ref` |
+| `module.online` / `module.heartbeat` / `module.offline` | модуль → core | то же | версия контракта, SDK, `kinds`, схемы, `min_budget_usd?` / `in_flight` |
 
 Лимит конверта — 256 КиБ, всё большее идёт через claim-check (§5.4).
 
@@ -343,11 +351,17 @@ spec:
 - **Хранение.** После каждой стадии ядро пишет снапшот контекста в `context_snapshots` (контент-адресуемый, `sha256`). Это даёт историю «что было на каждом шаге» для UI и детерминированный retry. Если снапшот больше 1 МиБ, его тело уходит в S3, а в БД остаётся ссылка.
 - **Схемы.** Модуль объявляет `input_schema` и `output_schema` (JSON Schema из Pydantic). При `apply` ядро проверяет, что каждый обязательный вход шага чем-то обеспечен (best-effort). Во время работы ядро валидирует выход, а SDK — вход.
 
+### 5.3a История визитов
+- Стадия, в которую run вернулся по `routes`, получает новый **визит** (`visit` + 1), а каждый её шаг — новую строку `steps` с новым `step_key`. Выходы прошлых визитов не стираются.
+- В CEL: `steps.<id>.visits` — map по номеру визита (с 1) из `{visit, step_key, status, output, attempt_id, finished_at, error?}`; `steps.<id>.last` — последний завершённый визит, `steps.<id>.visit` — его номер, `steps.<id>.output` = `last.output`; переменная `visit` — номер текущего визита исполняемой стадии.
+- Проекции используют `has()` и `visit`: `previous: "visit > 1 ? steps.scenario.visits[visit - 1].output : {}"`.
+- Снапшоты контекста адресуются `(after_stage, visit)`: `GET /runs/{id}/snapshots/{after_stage}?visit=n`.
+
 ### 5.4 Большие данные (claim-check)
 - Любое значение больше `MF_INLINE_LIMIT` (64 КиБ), файлы и бинарные данные SDK кладёт в S3 и заменяет ссылкой:
-  `{"$blob": "s3://mf-blobs/runs/<run>/<step>/<attempt>/frames.parquet", "sha256": "…", "size": 73400320, "content_type": "application/x-parquet"}`. Ключ `$blob`, а не `$ref`, чтобы данные не путались с JSON Reference (ADR-0007).
+  `{"$blob": "s3://mf-blobs/runs/<run>/<step>/<attempt>/frames.parquet", "sha256": "…", "size": 73400320, "content_type": "application/x-parquet", "name": "frames.parquet", "keep": false}` (`sha256` обязателен; объект пишется один раз, `If-None-Match: *`). Ключ `$blob`, а не `$ref`, чтобы данные не путались с JSON Reference (ADR-0007).
 - Модуль работает с `ctx.blobs.put(name, file|bytes|stream)`, `await ctx.blobs.open(ref)` и `Blob`-полями Pydantic. Загрузка ленивая: модуль скачивает только то, что ему нужно.
-- **Права.** Каждый модуль пишет только в `runs/*/<свой step>/*`, читать может `runs/*`. В MinIO это политика на пользователя модуля, в S3 — роль. Ядро ничего не скачивает, только хранит ссылки.
+- **Права.** Каждый модуль пишет только в `runs/*/<свой step>/*`, читать может `runs/*`. В MinIO это политика на пользователя модуля, в S3 — роль. Ядро ничего не скачивает, только хранит ссылки. На `step.succeeded` каждая ссылка должна быть под `blob_prefix` попытки или уже известна в этом run, иначе `fatal invalid_blob_ref`. GC удаляет blobs только терминальных run и только с `keep: false`.
 - **Жизненный цикл.** Для бакета задаётся retention на уровне пайплайна (`blobs.ttl: 30d`). Blob, который помечен `ctx.blobs.put(..., keep=True)`, переживает TTL (например, итоговое видео). Удалением занимается GC ядра или lifecycle-правило MinIO.
 - **Внешние потребители**, например Instagram, получают `ctx.blobs.presign(ref, ttl)`, как сейчас в `mf-storage`.
 
@@ -411,16 +425,20 @@ if __name__ == "__main__":
 ```mermaid
 stateDiagram-v2
   [*] --> queued: run.requested / API (admission)
-  queued --> running: слот свободен
+  queued --> running: слот свободен, min_interval и day_usd позволяют
   running --> running: стадия завершена → следующая / route goto
+  running --> waiting_human: все шаги стадии ждут человека
+  waiting_human --> running: heartbeat или результат шага
   running --> succeeded: последняя стадия ok
   running --> failed: fatal на неопциональном шаге
-  running --> needs_attention: attention / ретраи исчерпаны / max_visits
+  running --> needs_attention: attention / ретраи исчерпаны / max_visits / бюджет / outcome_unknown
+  waiting_human --> needs_attention: wait.timeout + on_timeout attention
+  waiting_human --> cancelled: cancel
   needs_attention --> running: retry step / resume (оператор)
   needs_attention --> cancelled: cancel
   running --> cancelled: cancel
 ```
-Шаг: `pending → dispatched → running → succeeded | failed | skipped | cancelled`. Попытка: `dispatched → running → ok | error | timed_out | lost`.
+Шаг (строка = визит): `pending → dispatched → running ⇄ waiting → succeeded | failed | skipped | cancelled`. Попытка: `scheduled → dispatched → running ⇄ waiting → succeeded | failed | timed_out | lost | cancelled`. Терминальные статусы необратимы; из `needs_attention` выводит только действие оператора (с обязательным `comment`).
 
 Все переходы выполняются в одной транзакции: блокировка строки run или step, затем изменение, затем `events`, затем `outbox`. Это паттерн v1, и он остаётся.
 
@@ -430,11 +448,14 @@ stateDiagram-v2
 | `modules`, `module_revisions` | `name`, `revision`, `spec jsonb`, `spec_hash`, `manifest jsonb`, `managed_by` |
 | `module_status` | `desired/ready replicas`, `image`, `driver`, `conditions`, `last_heartbeat_at` |
 | `pipelines`, `pipeline_revisions` | `name`, `revision`, `spec jsonb`, `compiled jsonb` (DAG + CEL), `is_current` |
-| `runs` | `pipeline`, `revision`, `status`, `stage_cursor`, `trigger`, `dedup_key` (unique), `attention`, timestamps |
-| `run_queue` | ожидающие admission (FIFO по `enqueued_at`) |
-| `steps` | `run_id`, `stage`, `step_id`, `item_index` (для foreach), `status`, `visits`, `output_ref` |
-| `step_attempts` | `fence`, `request jsonb` (неизменяемый), `status`, `not_before`, `deadline`, `lease_until`, `error`, `replica_id` |
-| `context_snapshots` | `run_id`, `after_stage`, `sha256`, `body jsonb` или `blob_ref` |
+| `runs` | `pipeline`, `revision`, `status` (+`waiting_human`), `priority`, `labels`, `dedup_key` (unique с pipeline), `trigger`, `data`, `stage_index`, `budget`, `spent_usd`, `budget_warned_at`, `attention {code,message}`, `queue_reason`, timestamps |
+| `run_queue`, `pipeline_admission` | ожидающие admission (`priority DESC, enqueued_at`); `last_started_at` для `min_interval` |
+| `steps` (строка = визит) | `run_id`, `stage`, `stage_index`, `step_id`, `item_index`, `visit`, `step_key` (unique), `module`, `status` (+`waiting`), `current_attempt_id`, `output`, `waiting`, `wait_total`, `wait_deadline` |
+| `step_attempts` | `id`, `step_key`, `number`, `status` (+`waiting`), `request jsonb` (неизменяемый), `not_before`, `dispatched_at`, `started_at`, `deadline`, `lease_until`, `waiting_since`, `waiting_seq`, `confirmed_at`, `confirmed_until`, `confirm_count`, `error`, `replica_id` |
+| `usage` | по попытке: `cost_usd`, `tokens`, `day`; суммы по step, run, pipeline и дню |
+| `context_snapshots` | `run_id`, `after_stage`, `visit`, `sha256`, `body jsonb` или `blob_ref` |
+| `blobs` | `uri`, `run_id`, `attempt_id`, `sha256`, `size`, `name`, `keep` |
+| `module_tokens`, `dead_letters` | хеши токенов модулей для `confirm` (ADR-0013); DLQ, принятая ядром из `mf.dead-letters` |
 | `events` | журнал (партиционирован по месяцу, retention) и источник SSE |
 | `outbox`, `inbox` | из v1, плюс retention (П#29) |
 | `audit_log`, `api_tokens` | действия операторов, хеши токенов (П#17) |
@@ -447,7 +468,7 @@ stateDiagram-v2
 |---|---|
 | Transactional outbox relay с confirms, UUIDv5 `message_id` | `internal/messaging/relay.go`, `envelope.go` |
 | Inbox-дедуп consumer, топология с quorum и DLX, reconnect | `messaging/consumer.go`, `topology.go`, `conn.go` |
-| Fence, sweeper, `SKIP LOCKED`, advisory-lock | `engine/callbacks.go`, `engine.go` |
+| Проверка текущей попытки, sweeper, `SKIP LOCKED`, advisory-lock | `engine/callbacks.go`, `engine.go` |
 | Парковка при перегрузке | `pending_ideas` превращается в `run_queue` (#36) |
 | AES-GCM, хеширование токенов, goose, slog, bootstrap | `crypto`, `auth`, `db`, `bootstrap` |
 | Интеграционные тесты на реальных PG и RMQ | `internal/itest` (перевести на testcontainers) |
@@ -460,7 +481,7 @@ stateDiagram-v2
 | П# | Как закрывается в v2 |
 |---|---|
 | 1 | Слот занимают только runs в `running`; `needs_attention` его освобождает |
-| 2–7, 12, 24 | Нет видео-логики; попытка несёт полный неизменяемый запрос; retry и takeover копируют его с новым fence; `deadline` всегда считается заново |
+| 2–7, 12, 24 | Нет видео-логики; попытка несёт полный неизменяемый запрос; retry и takeover копируют его с новым `attempt.id`; `deadline` всегда считается заново |
 | 8 | `step.cancel` по таймауту, lost и отмене |
 | 9 | Метрика и алерт на `outbox.dead`; sweeper для зависших `pending/dispatched` |
 | 10 | `not_before` + exponential backoff + `retry_after_s` от модуля |
@@ -494,6 +515,16 @@ stateDiagram-v2
 | `mf_outbox_pending`, `mf_outbox_dead`, `mf_outbox_lag_seconds` | gauge | — |
 | `mf_consumer_failures_total`, `mf_stale_results_total` | counter | `reason` |
 | `mf_reconcile_errors_total` | counter | `driver, module` |
+| `mf_runs_waiting`, `mf_steps_waiting` | gauge | `pipeline` / `pipeline, module, reason` |
+| `mf_step_wait_duration_seconds` | histogram | `pipeline, stage, reason` |
+| `mf_stage_visits_total`, `mf_max_visits_exceeded_total` | counter | `pipeline, stage` |
+| `mf_attempt_confirms_total`, `mf_outcome_unknown_total` | counter | `module, result` / `module` |
+| `mf_usage_usd_total`, `mf_run_cost_usd` | counter / histogram | `pipeline, stage, module` / `pipeline` (токены и модели — только в таблице `usage`) |
+| `mf_budget_events_total`, `mf_admission_deferred_total` | counter | `pipeline, kind` / `pipeline, reason=max_runs\|min_interval\|day_budget` |
+| `mf_run_queue_wait_seconds` | histogram | `pipeline` |
+| `mf_notify_published_total` | counter | `module, event` |
+| `mf_dead_letters` / `mf_dead_letters_total` | gauge / counter | `source_module, status` / `source_queue, reason` |
+| `mf_blob_rejected_total`, `mf_data_too_large_total` | counter | `module, reason` / `pipeline, stage` |
 
 Кардинальность: `run_id` никогда не становится меткой. Он есть только в трейсах и логах.
 
@@ -699,7 +730,7 @@ sequenceDiagram
   I->>MQ: run.requested {data:{text:""}}
   MQ->>C: inbox dedup → run(queued→running)
   C-->>UI: run.created
-  C->>MQ: step.requested hello (fence 1)
+  C->>MQ: step.requested hello (attempt 1)
   MQ->>H: {text:""}
   H->>MQ: step.succeeded {text:"hello"}
   MQ->>C: merge patch → data.text="hello" → стадия world
@@ -715,7 +746,7 @@ sequenceDiagram
 ```
 
 ### 10.4 Те же механизмы для других проектов
-- **Видео:** source `ideas` → `video` (timeout 90m, lease 2m) → `review` (timeout 7d) с `routes: [{when: "steps.review.output.decision=='rejected'", goto: video, max_visits: 3}]` → `publish` (retry с `retry_after_s`). Ролик передаётся через `$blob`.
+- **Видео:** source `ideas` → `video` (timeout 90m, lease 2m) → `review` (`wait: {timeout: 7d}`, `on_timeout: attention`) с `routes: [{when: "steps.review.output.decision=='rejected'", goto: video, max_visits: 3}]` → `publish` (retry с `retry_after_s`). Ролик передаётся через `$blob`.
 - **География:** source `ingest` (снимки в blobs) → `tiles` (разбиение) → `foreach: data.tiles` с `geo-analyze` (`max_parallel: 16`, KEDA по очереди) → `parallel: [ndvi, roads, buildings]` → `map-report`.
 
 ---
@@ -730,7 +761,8 @@ sequenceDiagram
 | **C1. Каркас и спек ресурсов** ([#1](https://github.com/t1menar/manufacture-core/pull/1), смержен) | Go-модуль, `cmd/manufacture` (`validate`, `config`, `version`), `internal/config`, `schemas/v1` (Module, Pipeline), Go-типы, строгий декодер YAML с номерами строк, семантика (стадии, parallel, foreach, join, routes и `max_visits`, ссылки на модули), CEL-компиляция, `testdata/`, Makefile, golangci-lint, CI | `manufacture validate -f` принимает `testdata/valid/*`, отвергает каждый `testdata/invalid/*` с ошибкой `файл:строка: путь: сообщение`; CI (lint, test -race, build) зелёный |
 | **C2. Контракт сообщений и API** (сделано) | `schemas/envelope/v2`, манифест модуля, `api/openapi.yaml` v2, ADR 001–010, workflow релиза контракта (`contract-vX.Y.Z.tar.gz`) | Схемы проходят lint; на тег создаётся релиз с архивом и SHA256SUMS |
 | **C3. Store и apply** (сделано) | PostgreSQL (goose, pgx), ревизии `modules` и `pipelines`, gateway `POST /api/v1/apply`, `GET`, `mfctl apply/get/describe`, admin-токен | Повторный apply того же файла даёт 1 ревизию; невалидный спек даёт 422 с путём; itest на PG |
-| C4. Engine (линейный) | runs, steps, attempts, outbox/inbox/fence из v1, retry/backoff, timeout, lease, cancel, admission | itest: дубль результата, stale fence, timeout → retry → cancel, lease lost, `needs_attention` не занимает слот |
+| C4. Engine (линейный) | `0002_engine.sql`; runs, steps (визиты), attempts, outbox/inbox из v1, retry/backoff, timeout от первого heartbeat, lease, cancel, `waiting`/`waiting_human`, `on_timeout`, `step_key`/`visit`, admission по приоритету и `min_interval`, учёт `usage` и бюджеты, `run.started`/`run.finished` через `mf.notify` | itest: дубль результата, stale attempt, timeout → retry → cancel, lease lost, `needs_attention` и `waiting_human` не занимают слот, таймаут ожидания → `needs_attention`, `run.finished` ровно один раз |
+| C5 (дополнение) | `module_tokens`, `POST /attempts/{id}/confirm`, ingest DLQ, пользователи брокера на модуль | itest: stale-результат и `confirm superseded` |
 | C5. External runtime и регистрация | `module.online`, пользователи RabbitMQ на модуль, проверка совместимости контракта, статус реплик по heartbeat | Модуль-заглушка на Go проходит линейный пайплайн в itest |
 | C6. Docker-драйвер, compose, образ | `runtime/docker`, controller, `deploy/compose`, образ в GHCR (`:main`, `:pr-<n>`, `:vX`), job `e2e-examples` | `make up` поднимает стек; e2e Hello World из examples зелёный на образе PR |
 | C7. Параллельность и данные | `parallel`/`foreach` и join в engine, merge-правила, `routes`, claim-check, снапшоты контекста, GC | itest: fan-out/fan-in, конфликт merge, цикл с `max_visits`, blob 50 МБ по `$blob` |

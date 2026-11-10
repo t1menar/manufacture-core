@@ -14,5 +14,7 @@
 | [0010](0010-repositories-and-contract.md) | Три репозитория, версия и релиз контракта |
 | [0011](0011-security-baseline.md) | Один admin-токен, loopback, секреты по ссылке |
 | [0012](0012-cel-expressions.md) | CEL для выражений |
+| [0013](0013-confirm-and-module-tokens.md) | `confirm` перед необратимым действием и токены модулей |
+| [0014](0014-waiting-and-on-timeout.md) | Ожидание (`step.waiting`, `waiting_human`) и `on_timeout` |
 
 Полный дизайн: [../architecture.md](../architecture.md).

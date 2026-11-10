@@ -87,7 +87,7 @@ spec:
 
 ## Контракт
 
-`schemas/` — источник истины для всех клиентов: SDK держит вендорную копию и проверяет её drift-тестом. Версия контракта лежит в `schemas/VERSION` (сейчас `0.2.1`: до `1.0.0` возможны ломающие изменения; релизы — теги `contract-vX.Y.Z` с архивом схем). Сообщения модулей описаны в `schemas/envelope/v2` и [docs/messaging.md](docs/messaging.md), API gateway — в [api/openapi.yaml](api/openapi.yaml). Каталог `testdata/` разделён на `valid/`, `invalid/schema/` и `invalid/rules/`, и SDK прогоняет его так же, как ядро.
+`schemas/` — источник истины для всех клиентов: SDK держит вендорную копию и проверяет её drift-тестом. Версия контракта лежит в `schemas/VERSION` (сейчас `0.3.0`: до `1.0.0` возможны ломающие изменения; релизы — теги `contract-vX.Y.Z` с архивом схем). Сообщения модулей описаны в `schemas/envelope/v2` и [docs/messaging.md](docs/messaging.md), API gateway — в [api/openapi.yaml](api/openapi.yaml). Каталог `testdata/` разделён на `valid/`, `invalid/schema/` и `invalid/rules/`, и SDK прогоняет его так же, как ядро.
 
 ## Конфигурация процесса
 
