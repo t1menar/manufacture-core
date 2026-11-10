@@ -193,6 +193,9 @@ func checkStep(r *reporter, p Path, s *Step, kind StageKind, defaults *StepPolic
 
 // checkPolicy validates the effective reliability settings of a step or the defaults.
 func checkPolicy(r *reporter, p Path, pol StepPolicy) {
+	if pol.Lease != 0 && pol.Lease < MinLease {
+		r.errorf(p.Key("lease"), "lease (%s) must be at least %s: heartbeats go every lease/3", pol.Lease, MinLease)
+	}
 	if pol.Timeout != 0 && pol.Lease != 0 && pol.Lease >= pol.Timeout {
 		r.errorf(p.Key("lease"), "lease (%s) must be shorter than timeout (%s)", pol.Lease, pol.Timeout)
 	}

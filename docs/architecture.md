@@ -127,7 +127,7 @@ manufacture-examples/
   - SDK хранит вендорную копию в `src/manufacture/_contract/` и `CONTRACT_VERSION`. Обновление — скрипт `make contract-sync VERSION=x.y.z`, оформленный отдельным PR.
   - **Drift-тест** в CI SDK скачивает архив пинованной версии из релиза ядра и сравнивает побайтно. Отдельная nightly-задача сравнивает с `main` ядра и только сообщает о расхождении, без падения PR.
   - Тот же тест прогоняет `testdata/valid` и `testdata/invalid` из ядра через Pydantic-модели SDK, так что SDK и ядро одинаково принимают и отвергают спеки.
-- **Совместимость в рантайме.** Модуль сообщает `sdk_version` и `contract_version` в `module.online`. Ядро отклоняет несовместимую мажорную версию с понятной ошибкой в UI.
+- **Совместимость в рантайме.** Модуль сообщает `sdk_version` и `contract_version` в `module.online`. Ядро отклоняет несовместимую версию (другая мажорная, до 1.0.0 — другая минорная) с понятной ошибкой в UI: реплика `unhealthy`.
 
 ### 1.4 Кросс-репозиторный CI и e2e
 
@@ -232,9 +232,9 @@ Controller — это цикл reconcile раз в 5 с плюс реакция 
 
 ### 3.4 Надёжность шага
 ```yaml
-retry:   {max_attempts: 3, backoff: exponential, initial: 2s, max: 5m, jitter: true, on_errors: [transient, timeout, lost]}  # не `on`: YAML 1.1 читает его как true
-timeout: 30m      # бюджет исполнения: от первого heartbeat до результата, без времени в waiting
-lease:   60s      # без heartbeat дольше lease → attempt lost → retry
+retry:   {max_attempts: 3, backoff: exponential, initial: 2s, max: 5m, jitter: true, on_errors: [transient, timeout, lost]}  # это и есть умолчания (действуют и без блока retry); не `on`: YAML 1.1 читает его как true
+timeout: 30m      # (умолчание) бюджет исполнения: от первого heartbeat до результата, без времени в waiting
+lease:   60s      # без heartbeat дольше lease → attempt lost → retry; по умолчанию min(60s, timeout/2), не меньше 3s
 on_timeout: retry # retry | fail | attention; действует и на timeout, и на wait.timeout
 ```
 - Классы ошибок из SDK: `transient` (ретрай), `fatal` (run `failed`, если стадия не `optional: true`), `attention` (run в `needs_attention`, оператор решает в UI).

@@ -187,6 +187,22 @@ const (
 	OnTimeoutAttention OnTimeout = "attention"
 )
 
+// Step policy defaults (docs/messaging.md §8, Q&A 12–13). Without a retry block a step
+// still gets DefaultMaxAttempts attempts for DefaultRetryOn classes.
+const (
+	DefaultTimeout      = Duration(30 * time.Minute)
+	DefaultLeaseMax     = Duration(60 * time.Second) // default lease = min(DefaultLeaseMax, timeout/2), at least MinLease
+	MinLease            = Duration(3 * time.Second)
+	DefaultMaxAttempts  = 3
+	DefaultRetryInitial = Duration(2 * time.Second)
+	DefaultRetryMax     = Duration(5 * time.Minute)
+)
+
+// DefaultLease is the lease of a step that does not set one.
+func DefaultLease(timeout Duration) Duration {
+	return max(MinLease, min(DefaultLeaseMax, timeout/2))
+}
+
 // Defaults of the 0.3.0 fields.
 const (
 	DefaultWaitTimeout     = Duration(7 * 24 * time.Hour)

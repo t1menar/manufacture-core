@@ -2,6 +2,11 @@
 
 ## Contract
 
+### Unreleased
+- Validator: `lease` below 3s is an error. Step policy defaults are pinned (`docs/messaging.md` §8, Q&A 12–14):
+  timeout 30m, lease min(60s, timeout/2) and at least 3s, 3 attempts with exponential backoff 2s..5m and jitter ×U(0.5, 1)
+  even without a `retry` block; `run.requested` is accepted only from the pipeline's `trigger.source`.
+
 ### 0.3.0 (2026-11-10)
 Breaking (allowed before 1.0); implements the module team requirements R1–R10 (`docs/adr/0013`, `0014`).
 - Envelope: new `step.waiting` (module -> core; `reason`, `seq`, `expected_by`, `usage`), `run.started` and
