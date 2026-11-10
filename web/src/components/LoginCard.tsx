@@ -3,7 +3,7 @@ import { useState, type SyntheticEvent } from "react";
 
 import { api } from "../api/client";
 import { ProblemError } from "../api/problem";
-import { getToken, setToken } from "../auth/token";
+import { setToken } from "../auth/token";
 
 /** Admin token login: the token is checked against `/api/v1/system` and kept only in this browser. */
 export function LoginCard({ compact = false }: { compact?: boolean }) {
@@ -15,12 +15,11 @@ export function LoginCard({ compact = false }: { compact?: boolean }) {
     e.preventDefault();
     setBusy(true);
     setError(null);
-    const prev = getToken();
-    setToken(value);
+    const token = value.trim();
     try {
-      await api.system();
+      await api.verifyToken(token);
+      setToken(token);
     } catch (err) {
-      setToken(prev);
       setError(err instanceof ProblemError && err.status === 401 ? "Токен не подошёл" : err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);

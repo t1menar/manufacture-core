@@ -29,6 +29,7 @@ export type RunAction = "cancel" | "retry" | "resume";
 export const api = {
   overview: (signal?: AbortSignal) => request<Overview>("/overview", { signal }),
   system: (signal?: AbortSignal) => request<SystemInfo>("/system", { signal }),
+  verifyToken: (token: string) => request<SystemInfo>("/system", { token }),
 
   pipelines: async (signal?: AbortSignal) => (await request<List<PipelineSummary>>("/pipelines", { signal })).items,
   conveyor: (name: string, signal?: AbortSignal) => request<Conveyor>(`/pipelines/${enc(name)}/conveyor`, { signal }),

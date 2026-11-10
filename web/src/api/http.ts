@@ -28,6 +28,8 @@ export type RequestOptions = {
   raw?: { body: string; contentType: string };
   headers?: Record<string, string>;
   signal?: AbortSignal;
+  /** Overrides the stored admin token (login form checks a token before saving it). */
+  token?: string;
 };
 
 export function buildUrl(path: string, query?: RequestOptions["query"]): string {
@@ -40,7 +42,7 @@ export function buildUrl(path: string, query?: RequestOptions["query"]): string 
 
 export function buildRequest(path: string, opts: RequestOptions = {}): Request {
   const headers = new Headers({ accept: "application/json", ...opts.headers });
-  const token = getToken();
+  const token = opts.token ?? getToken();
   if (token) headers.set("authorization", `Bearer ${token}`);
   let body: string | undefined;
   if (opts.raw) {
