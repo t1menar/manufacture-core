@@ -45,8 +45,14 @@ jobs:
         ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U mf" --health-interval 2s --health-timeout 5s --health-retries 30
+      rabbitmq:
+        image: rabbitmq:4-management
+        ports: ["5672:5672"]
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q check_port_connectivity" --health-interval 3s --health-timeout 10s --health-retries 40
     env:
       MF_TEST_DATABASE_URL: postgres://mf:mf@localhost:5432/mf?sslmode=disable
+      MF_TEST_AMQP_URL: amqp://guest:guest@localhost:5672/
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7

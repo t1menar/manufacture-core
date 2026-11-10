@@ -6,6 +6,8 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"io"
+	"log/slog"
 	"net/url"
 	"os"
 	"testing"
@@ -112,4 +114,11 @@ func writeFile(t *testing.T, path, content string) {
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func quietLog() *slog.Logger {
+	if os.Getenv("MF_TEST_VERBOSE") != "" {
+		return slog.Default()
+	}
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
