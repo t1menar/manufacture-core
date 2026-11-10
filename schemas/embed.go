@@ -1,5 +1,5 @@
 // Package schemas holds the Manufacture contract: JSON Schemas of the resources
-// that users apply to the core. The files are the source of truth shared with the
+// that users apply to the core (v1/) and of the broker messages (envelope/v2/). The files are the source of truth shared with the
 // SDKs; Go code embeds them instead of duplicating the rules.
 package schemas
 
@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-//go:embed VERSION v1/*.json
+//go:embed VERSION v1/*.json envelope/v2/*.json
 var files embed.FS
 
 // FS returns the embedded schema files; paths are relative to this directory (for example "v1/module.schema.json").

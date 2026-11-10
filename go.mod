@@ -4,6 +4,7 @@ go 1.26.0
 
 require (
 	cel.dev/cel-go v0.33.2
+	github.com/google/uuid v1.6.0
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	go.yaml.in/yaml/v3 v3.0.6
 	golang.org/x/text v0.44.0

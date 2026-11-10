@@ -15,6 +15,8 @@ func TestVersionIsSemver(t *testing.T) {
 
 func TestSchemaIDsMatchPaths(t *testing.T) {
 	files, err := fs.Glob(FS(), "v1/*.json")
+	more, _ := fs.Glob(FS(), "envelope/v2/*.json")
+	files = append(files, more...)
 	if err != nil || len(files) == 0 {
 		t.Fatalf("no schemas: %v", err)
 	}
