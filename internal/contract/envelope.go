@@ -23,6 +23,9 @@ const SchemaVersion = 2
 // MaxMessageBytes is the largest envelope; bigger values go to object storage by reference.
 const MaxMessageBytes = 256 << 10
 
+// InlineMaxBytes is the largest JSON value an SDK keeps inline; bigger values become {"$blob": ...}.
+const InlineMaxBytes = 64 << 10
+
 // ProducerCore is the producer of messages sent by the core.
 const ProducerCore = "core"
 

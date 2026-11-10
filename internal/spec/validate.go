@@ -12,12 +12,42 @@ type Options struct {
 	// validated input as errors. By default they are warnings, because the module
 	// may already be applied to the core.
 	RequireReferences bool
+	// KnownModules are modules that exist outside of the input (already applied
+	// to the core). References to them are never reported.
+	KnownModules map[string]bool
 }
 
 // Set is a collection of resources that passed validation.
 type Set struct {
 	Modules   []*Module
 	Pipelines []*Pipeline
+	// Resources lists every valid resource in input order, with its document.
+	Resources []Resource
+}
+
+// Resource is one valid resource and the document it came from.
+type Resource struct {
+	Kind     Kind
+	Name     string
+	Doc      *Document
+	Module   *Module   // set when Kind is Module
+	Pipeline *Pipeline // set when Kind is Pipeline
+}
+
+// Object returns the typed resource.
+func (r Resource) Object() any {
+	if r.Module != nil {
+		return r.Module
+	}
+	return r.Pipeline
+}
+
+// Annotations returns the metadata annotations of the resource.
+func (r Resource) Annotations() map[string]string {
+	if r.Module != nil {
+		return r.Module.Metadata.Annotations
+	}
+	return r.Pipeline.Metadata.Annotations
 }
 
 // Len returns the number of resources in the set.
@@ -52,6 +82,9 @@ func Validate(docs []*Document, opts Options) (*Set, Diagnostics) {
 
 	set := &Set{}
 	for _, e := range entries {
+		if e.module != nil || e.pipeline != nil {
+			set.Resources = append(set.Resources, Resource{Kind: e.kind, Name: e.name, Doc: e.doc, Module: e.module, Pipeline: e.pipeline})
+		}
 		switch {
 		case e.module != nil:
 			set.Modules = append(set.Modules, e.module)
@@ -126,7 +159,7 @@ func checkSet(entries []entry, opts Options) Diagnostics {
 		sev = SeverityError
 	}
 	missing := func(e entry, p Path, name string) {
-		if !modules[name] {
+		if !modules[name] && !opts.KnownModules[name] {
 			diags = append(diags, e.doc.diagnostic(sev, p,
 				fmt.Sprintf("module %q is not defined in the input; it must exist in the core when the pipeline is applied", name)))
 		}

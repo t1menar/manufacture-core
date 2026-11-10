@@ -59,6 +59,12 @@ func Parse(source string, data []byte) ([]*Document, Diagnostics) {
 	return docs, diags
 }
 
+// YAML returns the document as YAML text, comments included.
+func (d *Document) YAML() ([]byte, error) { return yaml.Marshal(d.root) }
+
+// ErrorAt returns an error diagnostic positioned at path p of the document.
+func (d *Document) ErrorAt(p Path, msg string) Diagnostic { return d.errorAt(p, msg) }
+
 func isNull(n *yaml.Node) bool { return n.Kind == yaml.ScalarNode && n.Tag == "!!null" }
 
 // decode converts the YAML tree into JSON, so that schema validation and typed

@@ -102,3 +102,43 @@ func readLimited(path string) ([]byte, error) {
 	defer f.Close()
 	return io.ReadAll(io.LimitReader(f, MaxDocumentBytes+1))
 }
+
+// Input is the content of one spec file.
+type Input struct {
+	Name string
+	Data []byte
+}
+
+// ReadInputs reads the files that Load would parse, without parsing them, so that
+// they can be sent elsewhere (to the core API) with their names.
+func ReadInputs(paths []string, stdin io.Reader) ([]Input, Diagnostics) {
+	var (
+		out   []Input
+		diags Diagnostics
+	)
+	for _, p := range paths {
+		if p == Stdin {
+			data, err := io.ReadAll(io.LimitReader(stdin, MaxDocumentBytes+1))
+			if err != nil {
+				diags = append(diags, loadError(p, err))
+				continue
+			}
+			out = append(out, Input{Name: p, Data: data})
+			continue
+		}
+		files, err := expand(p)
+		if err != nil {
+			diags = append(diags, loadError(p, err))
+			continue
+		}
+		for _, f := range files {
+			data, err := readLimited(f)
+			if err != nil {
+				diags = append(diags, loadError(f, err))
+				continue
+			}
+			out = append(out, Input{Name: f, Data: data})
+		}
+	}
+	return out, diags
+}
