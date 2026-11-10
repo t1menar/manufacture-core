@@ -19,7 +19,9 @@ Breaking (allowed before 1.0); implements the module team requirements R1–R10 
   CEL: `visit`, `steps.<id>.visits[n]`, `.last`, `.visit`.
 - Gateway API 0.4.0: `POST /attempts/{id}/confirm` (module token), operator actions with `comment`
   (`steps/{step_key}/retry|skip|cancel`, `PATCH runs/{id}/budget|priority`), `/dead-letters`, `/usage`, statuses
-  `waiting` / `waiting_human`, SSE `step.waiting`, `run.budget_warning`, snapshots by visit.
+  `waiting` / `waiting_human`, snapshots by visit. Additive for API 0.3 clients: `Run.attention` stays a string
+  (plus `attention_info {code, message}`), `Step.visits` stays (= `visit`); SSE `step.waiting` and
+  `run.budget_warning` are planned for API 0.5.
 - `docs/messaging.md` rewritten for 0.3.0, including the SDK Q&A; `docs/patterns/review-gate.md`.
 
 ### 0.2.1 (2026-11-10)

@@ -916,7 +916,8 @@ components:
         status: { $ref: "#/components/schemas/RunStatus" }
         stage_index: { type: integer, description: Current (or last) stage index. }
         stage: { type: string }
-        attention: { $ref: "#/components/schemas/Attention" }
+        attention: { type: string, description: Why the run needs an operator (the message of attention_info). }
+        attention_info: { $ref: "#/components/schemas/Attention" }
         trigger: { type: object, required: [kind], properties: { kind: { type: string, enum: [manual, source, schedule, api, retry] }, by: { type: string } } }
         priority: { $ref: "#/components/schemas/Priority" }
         labels: { $ref: "#/components/schemas/Labels" }
@@ -956,7 +957,7 @@ components:
     Step:
       type: object
       description: One visit of a step (a stage visited again after a route back has a new row with visit + 1).
-      required: [step_key, stage, stage_index, step_id, module, status, visit, attempts]
+      required: [stage, stage_index, step_id, module, status, visits, attempts]
       properties:
         step_key: { type: string, format: uuid }
         stage: { type: string }
@@ -965,7 +966,8 @@ components:
         module: { type: string }
         item_index: { type: integer, description: foreach only. }
         status: { $ref: "#/components/schemas/StepStatus" }
-        visit: { type: integer, description: "1 for the first pass, higher after route loops." }
+        visit: { type: integer, description: "Visit of the stage this row belongs to: 1 for the first pass, higher after route loops." }
+        visits: { type: integer, description: "Same as visit (kept for API 0.3 clients; to be removed in 0.5)." }
         waiting: { $ref: "#/components/schemas/Waiting" }
         wait_total_seconds: { type: number }
         usage: { $ref: "#/components/schemas/Usage" }
@@ -984,7 +986,7 @@ components:
           type: array
           items:
             type: object
-            required: [after_stage, visit, sha256, created_at, size]
+            required: [after_stage, sha256, created_at, size]
             properties:
               after_stage: { type: integer }
               visit: { type: integer }
@@ -1054,11 +1056,9 @@ components:
         - run.created
         - run.updated
         - run.finished
-        - run.budget_warning
         - step.dispatched
         - step.started
         - step.progress
-        - step.waiting
         - step.succeeded
         - step.failed
         - step.skipped
@@ -1068,6 +1068,7 @@ components:
         - pipeline.deleted
         - metrics.tick
         - reset
+      description: "Planned for API 0.5 (once the panel handles them): step.waiting (StepEvent with waiting) and run.budget_warning (RunEvent). Until then a waiting step is reported by step.progress with status waiting in GET /runs/{id}."
       x-sse-payloads:
         run.*: RunEvent
         step.*: StepEvent

@@ -391,7 +391,10 @@ export type paths = {
         };
         get?: never;
         put?: never;
-        /** Resume a run in needs_attention by retrying its failed steps with the same input */
+        /**
+         * Resume a run in needs_attention by retrying the failed steps of the current visit (same step_key)
+         * @description Needs `acknowledge_attention` true when a failed step ended with an attention error (409 attention_ack_required otherwise).
+         */
         post: operations["resumeRun"];
         delete?: never;
         options?: never;
@@ -450,6 +453,245 @@ export type paths = {
         };
         /** Timeline of the run (oldest first) */
         get: operations["listRunEvents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/runs/{id}/budget": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["ID"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Change the run budget (typically before resume after budget_exceeded) */
+        patch: operations["patchRunBudget"];
+        trace?: never;
+    };
+    "/api/v1/runs/{id}/priority": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["ID"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Change the priority of a queued run */
+        patch: operations["patchRunPriority"];
+        trace?: never;
+    };
+    "/api/v1/steps/{step_key}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description One visit of a step (uuid5, see docs/messaging.md). */
+                step_key: components["parameters"]["StepKey"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * New attempt of the same visit (same step_key, so a module ledger deduplicates)
+         * @description When the last error is of class attention (including outcome_unknown), the request needs `acknowledge_attention` true; otherwise 409 `attention_ack_required` with the error text, which the UI shows for confirmation.
+         */
+        post: operations["retryStep"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/steps/{step_key}/skip": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description One visit of a step (uuid5, see docs/messaging.md). */
+                step_key: components["parameters"]["StepKey"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Complete the step on behalf of the module (pass a gate or decide by hand)
+         * @description `output` is checked against the module output_schema; a waiting module gets step.cancel with reason operator.
+         */
+        post: operations["skipStep"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/steps/{step_key}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description One visit of a step (uuid5, see docs/messaging.md). */
+                step_key: components["parameters"]["StepKey"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancel the step; then the step on_cancel applies (fail or attention, default attention) */
+        post: operations["cancelStep"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/attempts/{id}/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["ID"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Check, right before an irreversible action, that the attempt is still current
+         * @description Called by a module (module token) before an irreversible side effect. One transaction checks that
+         *     the attempt is the current attempt of its step, running or waiting, with a live lease, that the run
+         *     is running or waiting_human and that the deadline is more than `extend_seconds` away. On `ok` the lease
+         *     is extended to now + extend_seconds and the attempt becomes **confirmed**: until `confirmed_until`
+         *     it is never marked lost or timed out, and afterwards without a result it goes to needs_attention
+         *     (outcome_unknown) instead of a retry. Repeating confirm is idempotent.
+         */
+        post: operations["confirmAttempt"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/dead-letters": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Dead-lettered broker messages, newest first */
+        get: operations["listDeadLetters"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/dead-letters/redeliver": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Redeliver several dead letters (same message_id, through the outbox) */
+        post: operations["redeliverDeadLetters"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/dead-letters/{dl_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                dl_id: components["parameters"]["DeadLetterID"];
+            };
+            cookie?: never;
+        };
+        /** One dead letter with body, headers and x-death */
+        get: operations["getDeadLetter"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/dead-letters/{dl_id}/redeliver": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                dl_id: components["parameters"]["DeadLetterID"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Publish the message again to its original exchange and routing key with the same message_id */
+        post: operations["redeliverDeadLetter"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/dead-letters/{dl_id}/discard": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                dl_id: components["parameters"]["DeadLetterID"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Mark a dead letter discarded */
+        post: operations["discardDeadLetter"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Usage totals (cost and tokens as reported by modules), grouped */
+        get: operations["getUsage"];
         put?: never;
         post?: never;
         delete?: never;
@@ -589,6 +831,13 @@ export type components = {
             /** @description JSON pointer inside the document, e.g. /spec/stages/0/steps/1. */
             path?: string;
             message: string;
+        };
+        ApplyFiles: {
+            files: {
+                name?: string;
+                /** @description YAML or JSON text. */
+                content: string;
+            }[];
         };
         ApplyResult: {
             /** @description false for dry_run */
@@ -755,10 +1004,108 @@ export type components = {
             source: string;
             managed_by?: string;
         };
+        /**
+         * @description waiting_human: every unfinished step of the current stage waits for a human (does not hold a max_runs slot unless concurrency.count_waiting).
+         * @enum {string}
+         */
+        RunStatus: "queued" | "running" | "waiting_human" | "succeeded" | "failed" | "needs_attention" | "cancelled";
         /** @enum {string} */
-        RunStatus: "queued" | "running" | "succeeded" | "failed" | "needs_attention" | "cancelled";
+        StepStatus: "pending" | "dispatched" | "running" | "waiting" | "succeeded" | "failed" | "skipped" | "cancelled";
+        Comment: string;
+        /** @default 0 */
+        Priority: number;
+        Labels: Record<string, string>;
+        /** @description Cost and tokens as reported by modules (cumulative per attempt; summed per step and run). */
+        Usage: {
+            cost_usd: number;
+            tokens?: Record<string, {
+                    input?: number;
+                    output?: number;
+                    cache_read?: number;
+                    cache_write?: number;
+                }>;
+        };
+        Attention: {
+            /**
+             * @example step_failed
+             * @example budget_exceeded
+             * @example budget_insufficient
+             * @example outcome_unknown
+             * @example max_visits_exceeded
+             * @example cancelled_after_confirm
+             * @example timeout
+             */
+            code: string;
+            message: string;
+        };
+        Waiting: {
+            /** @enum {string} */
+            reason: "human" | "external";
+            message?: string;
+            /** Format: date-time */
+            expected_by?: string;
+            /** Format: date-time */
+            since: string;
+            /**
+             * Format: date-time
+             * @description When wait.timeout expires.
+             */
+            deadline?: string;
+        };
+        ConfirmRequest: {
+            /** Format: uuid */
+            step_key: string;
+            /** @description What the module is about to do (audit), e.g. media_publish. */
+            action?: string;
+            /** @default 120 */
+            extend_seconds: number;
+        };
+        ConfirmResult: {
+            /** @enum {string} */
+            result: "ok" | "superseded" | "cancelled" | "deadline";
+            /** Format: uuid */
+            attempt_id: string;
+            /** Format: uuid */
+            step_key: string;
+            visit: number;
+            /** Format: date-time */
+            lease_until?: string;
+            /** Format: date-time */
+            deadline?: string;
+            /** @description superseded: new_attempt | lost | timed_out; cancelled: run | step | budget | run_inactive. */
+            detail?: string;
+        };
         /** @enum {string} */
-        StepStatus: "pending" | "dispatched" | "running" | "succeeded" | "failed" | "skipped" | "cancelled";
+        DeadLetterStatus: "parked" | "redelivered" | "discarded";
+        DeadLetter: {
+            id: number;
+            /** Format: uuid */
+            message_id?: string;
+            type?: string;
+            exchange: string;
+            routing_key: string;
+            source_queue: string;
+            source_module?: string;
+            /** @description x-death reason: rejected, expired, maxlen, delivery_limit. */
+            reason: string;
+            death_count: number;
+            status: components["schemas"]["DeadLetterStatus"];
+            /** Format: date-time */
+            first_death_at?: string;
+            /** Format: date-time */
+            received_at: string;
+            /** Format: date-time */
+            acted_at?: string;
+            acted_by?: string;
+            comment?: string;
+        };
+        DeadLetterDetail: components["schemas"]["DeadLetter"] & {
+            headers: Record<string, unknown>;
+            /** @description The message body: JSON as text, or base64 when not UTF-8 (see body_encoding). */
+            body: string;
+            /** @enum {string} */
+            body_encoding?: "utf8" | "base64";
+        };
         ErrorInfo: {
             /** @enum {string} */
             class: "transient" | "fatal" | "attention" | "timeout" | "lost" | "cancelled";
@@ -774,13 +1121,30 @@ export type components = {
             /** @description Current (or last) stage index. */
             stage_index: number;
             stage?: string;
-            /** @description Why the run needs an operator. */
+            /** @description Why the run needs an operator (the message of attention_info). */
             attention?: string;
+            attention_info?: components["schemas"]["Attention"];
             trigger: {
                 /** @enum {string} */
-                kind: "manual" | "source" | "api" | "retry";
+                kind: "manual" | "source" | "schedule" | "api" | "retry";
                 by?: string;
             };
+            priority?: components["schemas"]["Priority"];
+            labels?: components["schemas"]["Labels"];
+            dedup_key?: string;
+            /**
+             * @description Why a queued run is not admitted yet.
+             * @enum {string}
+             */
+            queue_reason?: "max_runs" | "min_interval" | "day_budget";
+            budget?: {
+                run_usd?: number;
+                warn_usd?: number;
+                /** @enum {string} */
+                state?: "ok" | "warn" | "exceeded";
+            };
+            spent_usd?: number;
+            usage?: components["schemas"]["Usage"];
             /** Format: date-time */
             created_at: string;
             /** Format: date-time */
@@ -798,8 +1162,22 @@ export type components = {
             /** @description 1-based. */
             number: number;
             /** @enum {string} */
-            status: "scheduled" | "dispatched" | "running" | "succeeded" | "failed" | "timed_out" | "lost" | "cancelled";
+            status: "scheduled" | "dispatched" | "running" | "waiting" | "succeeded" | "failed" | "timed_out" | "lost" | "cancelled";
             replica_id?: string;
+            /** Format: date-time */
+            dispatched_at?: string;
+            /** Format: date-time */
+            lease_until?: string;
+            /**
+             * Format: date-time
+             * @description started_at + timeout + time spent waiting (and at most the absolute deadline).
+             */
+            deadline?: string;
+            /** Format: date-time */
+            confirmed_at?: string;
+            /** Format: date-time */
+            confirmed_until?: string;
+            usage?: components["schemas"]["Usage"];
             progress?: number;
             /** Format: date-time */
             not_before?: string;
@@ -809,7 +1187,10 @@ export type components = {
             finished_at?: string;
             error?: components["schemas"]["ErrorInfo"];
         };
+        /** @description One visit of a step (a stage visited again after a route back has a new row with visit + 1). */
         Step: {
+            /** Format: uuid */
+            step_key?: string;
             stage: string;
             stage_index: number;
             step_id: string;
@@ -817,8 +1198,13 @@ export type components = {
             /** @description foreach only. */
             item_index?: number;
             status: components["schemas"]["StepStatus"];
-            /** @description 1 for the first pass, higher after route loops. */
+            /** @description Visit of the stage this row belongs to: 1 for the first pass, higher after route loops. */
+            visit?: number;
+            /** @description Same as visit (kept for API 0.3 clients; to be removed in 0.5). */
             visits: number;
+            waiting?: components["schemas"]["Waiting"];
+            wait_total_seconds?: number;
+            usage?: components["schemas"]["Usage"];
             /** Format: date-time */
             started_at?: string;
             /** Format: date-time */
@@ -833,6 +1219,7 @@ export type components = {
             context: Record<string, unknown>;
             snapshots: {
                 after_stage: number;
+                visit?: number;
                 sha256: string;
                 /** Format: date-time */
                 created_at: string;
@@ -888,13 +1275,24 @@ export type components = {
              * @example run.cancel
              * @example run.resume
              * @example run.retry
+             * @example step.retry
+             * @example step.skip
+             * @example step.cancel
+             * @example run.budget
+             * @example run.priority
+             * @example dead_letter.redeliver
+             * @example attempt.confirm
              * @example session.create
              */
             action: string;
             target: string;
+            comment?: string;
             details?: Record<string, unknown>;
         };
-        /** @enum {string} */
+        /**
+         * @description Planned for API 0.5 (once the panel handles them): step.waiting (StepEvent with waiting) and run.budget_warning (RunEvent). Until then a waiting step is reported by step.progress with status waiting in GET /runs/{id}.
+         * @enum {string}
+         */
         StreamEventType: "run.created" | "run.updated" | "run.finished" | "step.dispatched" | "step.started" | "step.progress" | "step.succeeded" | "step.failed" | "step.skipped" | "module.status" | "module.deleted" | "pipeline.applied" | "pipeline.deleted" | "metrics.tick" | "reset";
         RunEvent: {
             /** Format: uuid */
@@ -905,6 +1303,9 @@ export type components = {
             stage_index?: number;
             stage?: string;
             error?: components["schemas"]["ErrorInfo"];
+            attention?: components["schemas"]["Attention"];
+            priority?: number;
+            spent_usd?: number;
             /** Format: date-time */
             at: string;
         };
@@ -921,9 +1322,13 @@ export type components = {
             attempt?: number;
             /** Format: uuid */
             attempt_id?: string;
+            /** Format: uuid */
+            step_key?: string;
+            visit?: number;
             progress?: number;
-            /** @description step.progress only. */
+            /** @description step.progress and step.waiting. */
             message?: string;
+            waiting?: components["schemas"]["Waiting"];
             error?: components["schemas"]["ErrorInfo"];
             /** Format: date-time */
             at: string;
@@ -968,8 +1373,28 @@ export type components = {
         ID: string;
         Limit: number;
         Cursor: string;
+        /** @description One visit of a step (uuid5, see docs/messaging.md). */
+        StepKey: string;
+        DeadLetterID: number;
     };
-    requestBodies: never;
+    requestBodies: {
+        Operator: {
+            content: {
+                "application/json": {
+                    comment: components["schemas"]["Comment"];
+                };
+            };
+        };
+        OperatorAck: {
+            content: {
+                "application/json": {
+                    comment: components["schemas"]["Comment"];
+                    /** @default false */
+                    acknowledge_attention?: boolean;
+                };
+            };
+        };
+    };
     headers: never;
     pathItems: never;
 }
@@ -1094,7 +1519,7 @@ export type operations = {
         requestBody: {
             content: {
                 "application/yaml": string;
-                "application/json": Record<string, unknown>;
+                "application/json": components["schemas"]["ApplyFiles"] | Record<string, unknown>;
             };
         };
         responses: {
@@ -1396,6 +1821,9 @@ export type operations = {
             content: {
                 "application/json": {
                     data?: Record<string, unknown>;
+                    priority?: components["schemas"]["Priority"];
+                    labels?: components["schemas"]["Labels"];
+                    dedup_key?: string;
                 };
             };
         };
@@ -1501,7 +1929,7 @@ export type operations = {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: components["requestBodies"]["Operator"];
         responses: {
             /** @description OK */
             200: {
@@ -1512,6 +1940,7 @@ export type operations = {
             };
             404: components["responses"]["Problem"];
             409: components["responses"]["Problem"];
+            422: components["responses"]["Problem"];
         };
     };
     resumeRun: {
@@ -1523,7 +1952,7 @@ export type operations = {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: components["requestBodies"]["OperatorAck"];
         responses: {
             /** @description OK */
             200: {
@@ -1545,7 +1974,7 @@ export type operations = {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: components["requestBodies"]["Operator"];
         responses: {
             /** @description The new run (trigger.kind = retry). */
             201: {
@@ -1560,7 +1989,10 @@ export type operations = {
     };
     getRunSnapshot: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Visit of the stage; the last one by default. */
+                visit?: number;
+            };
             header?: never;
             path: {
                 id: components["parameters"]["ID"];
@@ -1606,6 +2038,353 @@ export type operations = {
                 };
             };
             404: components["responses"]["Problem"];
+        };
+    };
+    patchRunBudget: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["ID"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    run_usd: number;
+                    warn_usd?: number;
+                    comment: components["schemas"]["Comment"];
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: Record<string, unknown>;
+                content: {
+                    "application/json": components["schemas"]["Run"];
+                };
+            };
+            404: components["responses"]["Problem"];
+            409: components["responses"]["Problem"];
+            422: components["responses"]["Problem"];
+        };
+    };
+    patchRunPriority: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["ID"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    priority: components["schemas"]["Priority"];
+                    comment: components["schemas"]["Comment"];
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: Record<string, unknown>;
+                content: {
+                    "application/json": components["schemas"]["Run"];
+                };
+            };
+            404: components["responses"]["Problem"];
+            /** @description The run is no longer queued. */
+            409: {
+                headers: Record<string, unknown>;
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            422: components["responses"]["Problem"];
+        };
+    };
+    retryStep: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description One visit of a step (uuid5, see docs/messaging.md). */
+                step_key: components["parameters"]["StepKey"];
+            };
+            cookie?: never;
+        };
+        requestBody: components["requestBodies"]["OperatorAck"];
+        responses: {
+            /** @description OK */
+            200: {
+                headers: Record<string, unknown>;
+                content: {
+                    "application/json": components["schemas"]["Step"];
+                };
+            };
+            404: components["responses"]["Problem"];
+            409: components["responses"]["Problem"];
+            422: components["responses"]["Problem"];
+        };
+    };
+    skipStep: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description One visit of a step (uuid5, see docs/messaging.md). */
+                step_key: components["parameters"]["StepKey"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    comment: components["schemas"]["Comment"];
+                    output?: Record<string, unknown>;
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: Record<string, unknown>;
+                content: {
+                    "application/json": components["schemas"]["Step"];
+                };
+            };
+            404: components["responses"]["Problem"];
+            409: components["responses"]["Problem"];
+            422: components["responses"]["Problem"];
+        };
+    };
+    cancelStep: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description One visit of a step (uuid5, see docs/messaging.md). */
+                step_key: components["parameters"]["StepKey"];
+            };
+            cookie?: never;
+        };
+        requestBody: components["requestBodies"]["Operator"];
+        responses: {
+            /** @description OK */
+            200: {
+                headers: Record<string, unknown>;
+                content: {
+                    "application/json": components["schemas"]["Step"];
+                };
+            };
+            404: components["responses"]["Problem"];
+            409: components["responses"]["Problem"];
+            422: components["responses"]["Problem"];
+        };
+    };
+    confirmAttempt: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["ID"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConfirmRequest"];
+            };
+        };
+        responses: {
+            /** @description One of the four outcomes. */
+            200: {
+                headers: Record<string, unknown>;
+                content: {
+                    "application/json": components["schemas"]["ConfirmResult"];
+                };
+            };
+            /** @description Unknown or revoked module token. */
+            401: {
+                headers: Record<string, unknown>;
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The attempt belongs to another module, or the admin token was used. */
+            403: {
+                headers: Record<string, unknown>;
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            404: components["responses"]["Problem"];
+            /** @description step_key does not match the attempt. */
+            422: {
+                headers: Record<string, unknown>;
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    listDeadLetters: {
+        parameters: {
+            query?: {
+                queue?: string;
+                type?: string;
+                status?: components["schemas"]["DeadLetterStatus"];
+                limit?: components["parameters"]["Limit"];
+                cursor?: components["parameters"]["Cursor"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: Record<string, unknown>;
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["DeadLetter"][];
+                        next_cursor?: string;
+                    };
+                };
+            };
+            default: components["responses"]["Problem"];
+        };
+    };
+    redeliverDeadLetters: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    ids: number[];
+                    comment: components["schemas"]["Comment"];
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: Record<string, unknown>;
+                content: {
+                    "application/json": {
+                        redelivered: number;
+                    };
+                };
+            };
+            422: components["responses"]["Problem"];
+        };
+    };
+    getDeadLetter: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                dl_id: components["parameters"]["DeadLetterID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: Record<string, unknown>;
+                content: {
+                    "application/json": components["schemas"]["DeadLetterDetail"];
+                };
+            };
+            404: components["responses"]["Problem"];
+        };
+    };
+    redeliverDeadLetter: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                dl_id: components["parameters"]["DeadLetterID"];
+            };
+            cookie?: never;
+        };
+        requestBody: components["requestBodies"]["Operator"];
+        responses: {
+            /** @description OK */
+            200: {
+                headers: Record<string, unknown>;
+                content: {
+                    "application/json": components["schemas"]["DeadLetter"];
+                };
+            };
+            404: components["responses"]["Problem"];
+            409: components["responses"]["Problem"];
+            422: components["responses"]["Problem"];
+        };
+    };
+    discardDeadLetter: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                dl_id: components["parameters"]["DeadLetterID"];
+            };
+            cookie?: never;
+        };
+        requestBody: components["requestBodies"]["Operator"];
+        responses: {
+            /** @description OK */
+            200: {
+                headers: Record<string, unknown>;
+                content: {
+                    "application/json": components["schemas"]["DeadLetter"];
+                };
+            };
+            404: components["responses"]["Problem"];
+            409: components["responses"]["Problem"];
+            422: components["responses"]["Problem"];
+        };
+    };
+    getUsage: {
+        parameters: {
+            query?: {
+                pipeline?: string;
+                /** @description key=value */
+                label?: string;
+                from?: string;
+                to?: string;
+                group_by?: "pipeline" | "day" | "module" | "stage";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: Record<string, unknown>;
+                content: {
+                    "application/json": {
+                        total: components["schemas"]["Usage"];
+                        items: {
+                            key: string;
+                            usage: components["schemas"]["Usage"];
+                        }[];
+                    };
+                };
+            };
+            default: components["responses"]["Problem"];
         };
     };
     presignBlob: {
