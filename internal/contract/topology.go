@@ -28,6 +28,12 @@ func WorkQueue(module string) string { return "mf.module." + module }
 // WorkKey is the routing key of work for a module on ExchangeCommands.
 func WorkKey(module string) string { return "module." + module }
 
+// NotifyQueue receives run.started / run.finished for a module with subscribe.
+func NotifyQueue(module string) string { return "mf.notify." + module }
+
+// NotifyKey is the routing key of notifications for a module on ExchangeCommands.
+func NotifyKey(module string) string { return "notify." + module }
+
 // ControlKey is the routing key of control messages for a module on ExchangeControl.
 func ControlKey(module string) string { return "control." + module }
 
@@ -56,6 +62,8 @@ const (
 	EnvS3SecretKey  = "MF_S3_SECRET_KEY" //nolint:gosec // variable name, not a credential.
 	EnvS3TLS        = "MF_S3_TLS"
 	EnvLogLevel     = "MF_LOG_LEVEL"
+	EnvCoreURL      = "MF_CORE_URL"
+	EnvModuleToken  = "MF_MODULE_TOKEN" //nolint:gosec // variable name, not a credential.
 	EnvOTLPEndpoint = "OTEL_EXPORTER_OTLP_ENDPOINT"
 )
 
