@@ -76,6 +76,8 @@ type Config struct {
 	AdminToken  Secret     `json:"admin_token"`
 	LogLevel    slog.Level `json:"log_level"`
 	LogFormat   string     `json:"log_format"`
+	// SecureCookies marks the session cookie Secure; set it when the gateway is behind TLS.
+	SecureCookies bool `json:"secure_cookies"`
 }
 
 // S3 is the object storage for large payloads.
@@ -89,19 +91,20 @@ type S3 struct {
 
 // Environment variable names.
 const (
-	EnvListenAddr  = "MF_LISTEN_ADDR"
-	EnvDatabaseURL = "MF_DATABASE_URL"
-	EnvAMQPURL     = "MF_AMQP_URL"
-	EnvS3Endpoint  = "MF_S3_ENDPOINT"
-	EnvS3Bucket    = "MF_S3_BUCKET"
-	EnvS3AccessKey = "MF_S3_ACCESS_KEY"
-	EnvS3SecretKey = "MF_S3_SECRET_KEY" //nolint:gosec // name of a variable, not a credential.
-	EnvS3TLS       = "MF_S3_TLS"
-	EnvRuntime     = "MF_RUNTIME"
-	EnvRoles       = "MF_ROLES"
-	EnvAdminToken  = "MF_ADMIN_TOKEN" //nolint:gosec // name of a variable, not a credential.
-	EnvLogLevel    = "MF_LOG_LEVEL"
-	EnvLogFormat   = "MF_LOG_FORMAT"
+	EnvListenAddr    = "MF_LISTEN_ADDR"
+	EnvDatabaseURL   = "MF_DATABASE_URL"
+	EnvAMQPURL       = "MF_AMQP_URL"
+	EnvS3Endpoint    = "MF_S3_ENDPOINT"
+	EnvS3Bucket      = "MF_S3_BUCKET"
+	EnvS3AccessKey   = "MF_S3_ACCESS_KEY"
+	EnvS3SecretKey   = "MF_S3_SECRET_KEY" //nolint:gosec // name of a variable, not a credential.
+	EnvS3TLS         = "MF_S3_TLS"
+	EnvRuntime       = "MF_RUNTIME"
+	EnvRoles         = "MF_ROLES"
+	EnvAdminToken    = "MF_ADMIN_TOKEN" //nolint:gosec // name of a variable, not a credential.
+	EnvLogLevel      = "MF_LOG_LEVEL"
+	EnvLogFormat     = "MF_LOG_FORMAT"
+	EnvSecureCookies = "MF_SECURE_COOKIES"
 )
 
 // Defaults. The listen address is loopback so that a local start never exposes the API.
@@ -130,11 +133,12 @@ func Load(getenv func(string) string) (Config, error) {
 			SecretKey: Secret(l.required(EnvS3SecretKey)),
 			TLS:       l.boolean(EnvS3TLS, false),
 		},
-		Runtime:    oneOf(&l, EnvRuntime, DefaultRuntime, drivers),
-		Roles:      l.roles(EnvRoles),
-		AdminToken: Secret(l.str(EnvAdminToken, "")),
-		LogLevel:   l.level(EnvLogLevel),
-		LogFormat:  oneOf(&l, EnvLogFormat, DefaultLogFormat, []string{"json", "text"}),
+		Runtime:       oneOf(&l, EnvRuntime, DefaultRuntime, drivers),
+		Roles:         l.roles(EnvRoles),
+		AdminToken:    Secret(l.str(EnvAdminToken, "")),
+		LogLevel:      l.level(EnvLogLevel),
+		LogFormat:     oneOf(&l, EnvLogFormat, DefaultLogFormat, []string{"json", "text"}),
+		SecureCookies: l.boolean(EnvSecureCookies, false),
 	}
 	if _, _, err := net.SplitHostPort(c.ListenAddr); err != nil {
 		l.fail(EnvListenAddr, "must be host:port: %v", err)

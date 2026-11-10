@@ -33,6 +33,8 @@ type command struct {
 }
 
 var commands = map[string]command{
+	"serve":    {"run the core (roles from MF_ROLES: engine, controller, gateway)", runServe},
+	"migrate":  {"apply database migrations and exit", runMigrate},
 	"validate": {"check Module and Pipeline specs without a running core", runValidate},
 	"config":   {"print the effective configuration (secrets redacted)", runConfig},
 	"version":  {"print version information", runVersion},
