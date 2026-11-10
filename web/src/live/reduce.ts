@@ -30,7 +30,8 @@ export type Item = {
   finishedAt?: number;
 };
 
-export type FeedEntry = { key: number; at: number; type: StreamEvent["type"]; text: string; tone: "info" | "ok" | "warn" | "error" };
+/** `pipeline` is set for run/step entries so the overview can show only the selected pipeline. */
+export type FeedEntry = { key: number; at: number; type: StreamEvent["type"]; text: string; tone: "info" | "ok" | "warn" | "error"; pipeline?: string };
 
 export type LiveState = {
   modules: Record<string, ModuleStatus>;
@@ -224,7 +225,7 @@ export function applyEvent(s0: LiveState, ev: StreamEvent, now: number): LiveSta
       const tone = d.status === "succeeded" ? "ok" : d.status === "needs_attention" ? "warn" : finished ? "error" : "info";
       const feed =
         ev.type === "run.finished" || d.status === "needs_attention"
-          ? pushFeed(s, { at: now, type: ev.type, text: `${d.pipeline} · ${d.run_id.slice(0, 8)}: ${d.status}`, tone })
+          ? pushFeed(s, { at: now, type: ev.type, text: `${d.run_id.slice(0, 8)}: ${d.status}`, tone, pipeline: d.pipeline })
           : s.feed;
       return { ...s, items: { ...s.items, [d.run_id]: item }, feed };
     }
@@ -290,6 +291,7 @@ export function applyEvent(s0: LiveState, ev: StreamEvent, now: number): LiveSta
           at: now,
           type: ev.type,
           text: `${d.module} · ${d.stage}: ${d.error?.code ?? "error"}${d.error?.message ? ` — ${d.error.message}` : ""}`,
+          pipeline: d.pipeline,
           tone: retriable(d.error?.class) ? "warn" : "error",
         });
       }

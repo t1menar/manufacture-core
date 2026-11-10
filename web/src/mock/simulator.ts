@@ -714,6 +714,8 @@ export class Simulator {
           active: this.countRuns(p.name, "running"),
           queued: this.countRuns(p.name, "queued"),
           needs_attention: this.countRuns(p.name, "needs_attention"),
+          succeeded_24h: this.countRuns(p.name, "succeeded"),
+          failed_24h: this.countRuns(p.name, "failed"),
         },
       };
     });

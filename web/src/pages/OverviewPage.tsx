@@ -112,7 +112,8 @@ export function OverviewPage() {
   const [stats, setStats] = useState({ fps: 0, items: 0, total: 0, effects: true });
   const modules = useLive((s) => s.modules);
   const metrics = useLive((s) => s.metrics);
-  const feed = useLive((s) => s.feed);
+  const allFeed = useLive((s) => s.feed);
+  const feed = useMemo(() => allFeed.filter((f) => f.pipeline === undefined || f.pipeline === name), [allFeed, name]);
   const items = useLive((s) => s.items);
   const seedConveyor = useLive((s) => s.seedConveyor);
   const qc = useQueryClient();

@@ -34,7 +34,7 @@ function CameraRig({ layout, focus }: { layout: Layout; focus: Vec3 | null }) {
     if (focus) {
       void c.setLookAt(focus[0] + 5, 7.5, focus[2] + 10, focus[0], 1.2, focus[2], true);
     } else {
-      void c.setLookAt(cx + span * 0.08, span * 0.42, max[2] + span * 0.62, cx, 0, cz, true);
+      void c.setLookAt(cx + span * 0.06, span * 0.5, max[2] + span * 0.78, cx, 0, cz, true);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `key` captures the bounds
   }, [key, focus?.[0], focus?.[2]]);
