@@ -51,6 +51,13 @@ func checkModule(r *reporter, m *Module) {
 			r.errorf(sp.Key("env").Key(name), "variables starting with %s are reserved for the core and the SDK", reservedEnvPrefix)
 		}
 	}
+	seen := map[RunEvent]bool{}
+	for i, sub := range spec.Subscribe {
+		if seen[sub.Event] {
+			r.errorf(sp.Key("subscribe").Index(i), "%s is already subscribed; list its pipelines in one entry", sub.Event)
+		}
+		seen[sub.Event] = true
+	}
 	for i, s := range spec.Secrets {
 		p := sp.Key("secrets").Index(i).Key("env")
 		switch {

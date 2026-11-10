@@ -29,6 +29,9 @@ func checkPipeline(r *reporter, p *Pipeline) {
 	if spec.Defaults != nil {
 		checkPolicy(r, sp.Key("defaults"), *spec.Defaults)
 	}
+	if b := spec.Budget; b != nil && b.WarnUSD != 0 && b.RunUSD != 0 && b.WarnUSD >= b.RunUSD {
+		r.errorf(sp.Key("budget").Key("warn_usd"), "warn_usd (%g) must be below run_usd (%g)", b.WarnUSD, b.RunUSD)
+	}
 
 	stageIndex := make(map[string]int, len(spec.Stages))
 	duplicate := make(map[int]bool)
@@ -40,6 +43,8 @@ func checkPipeline(r *reporter, p *Pipeline) {
 		}
 		stageIndex[st.Name] = i
 	}
+
+	checkMaxVisits(r, sp, spec.Stages)
 
 	stepIDs := map[string]string{} // step id → path of its first definition
 	for i := range spec.Stages {
@@ -59,6 +64,31 @@ func checkPipeline(r *reporter, p *Pipeline) {
 			}
 			checkStep(r, p, s, st.Kind(), spec.Defaults)
 		})
+	}
+}
+
+// checkMaxVisits requires routes into the same stage to agree on max_visits: it
+// bounds the total visits of the target stage, whichever route leads there.
+func checkMaxVisits(r *reporter, sp Path, stages []Stage) {
+	type first struct {
+		n    int
+		path Path
+	}
+	byTarget := map[string]first{}
+	for i, st := range stages {
+		for j, rt := range st.Routes {
+			if rt.MaxVisits == 0 {
+				continue
+			}
+			p := sp.Key("stages").Index(i).Key("routes").Index(j).Key("max_visits")
+			f, ok := byTarget[rt.Goto]
+			switch {
+			case !ok:
+				byTarget[rt.Goto] = first{rt.MaxVisits, p}
+			case f.n != rt.MaxVisits:
+				r.errorf(p, "conflicting max_visits for stage %q: %d here, %d at %s", rt.Goto, rt.MaxVisits, f.n, f.path)
+			}
+		}
 	}
 }
 
@@ -143,6 +173,21 @@ func checkStep(r *reporter, p Path, s *Step, kind StageKind, defaults *StepPolic
 	}
 	if s.Timeout != 0 || s.Lease != 0 || s.Retry != nil { // defaults alone are checked once
 		checkPolicy(r, p, s.Policy(defaults))
+	}
+	if s.Wait != nil && kind != StageSingle {
+		r.errorf(p.Key("wait"), "wait is allowed only on a single-step stage, not in a %s stage", kind)
+	}
+	explicit := s.OnTimeout
+	if explicit == "" && defaults != nil {
+		explicit = defaults.OnTimeout
+	}
+	switch {
+	case s.Wait != nil && explicit == "":
+		r.warnf(p.Key("wait"), "on_timeout is not set, so an expired wait is retried; a review gate usually wants on_timeout: attention")
+	case explicit == OnTimeoutRetry:
+		if rt := s.Policy(defaults).Retry; rt != nil && rt.MaxAttempts == 1 {
+			r.warnf(p.Key("on_timeout"), "on_timeout: retry with retry.max_attempts 1 never retries; the run goes to needs_attention")
+		}
 	}
 }
 

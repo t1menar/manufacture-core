@@ -10,4 +10,13 @@ Each invalid file lists the expected diagnostics in comments:
 
 ```
 # want: <field path> | <message substring>
+# warn: <field path> | <message substring>
 ```
+
+`# warn:` lines declare expected warnings; other warnings are allowed.
+
+## envelope/
+
+- `valid/`, `invalid/` — broker messages that a client must accept or reject (the envelope schema plus blob-ref checks of every `$blob` object in the payload).
+- `step_key.json` — `step_key = uuid5(STEP_NS, "<run_id>:<stage>:<step_id>:<item_index or ->:<visit>")` vectors.
+- `message_ids.json` — derived message ids (results, `step.waiting` by `seq`, `run.started`, `run.finished`, `run.requested` by dedup key).

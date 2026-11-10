@@ -53,6 +53,9 @@ func runVariables() []cel.EnvOption {
 		cel.Variable("steps", cel.MapType(cel.StringType, cel.DynType)),
 		cel.Variable("run", cel.DynType),
 		cel.Variable("attempt", cel.IntType),
+		// visit is the visit number of the stage being evaluated (1 on the first pass);
+		// steps.<id>.visits[n], steps.<id>.last and steps.<id>.visit hold the history.
+		cel.Variable("visit", cel.IntType),
 	}
 }
 

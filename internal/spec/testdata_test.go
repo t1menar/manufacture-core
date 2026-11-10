@@ -11,9 +11,11 @@ import (
 
 const testdataDir = "../../testdata"
 
-// want is an expected diagnostic declared in a testdata file as "# want: <path> | <substring>".
+// want is an expected diagnostic declared in a testdata file as
+// "# want: <path> | <substring>" (an error) or "# warn: <path> | <substring>" (a warning).
 type want struct {
 	path, substr string
+	warning      bool
 }
 
 func readWants(t *testing.T, file string) []want {
@@ -25,15 +27,20 @@ func readWants(t *testing.T, file string) []want {
 	var wants []want
 	sc := bufio.NewScanner(bytes.NewReader(data))
 	for sc.Scan() {
-		line, ok := strings.CutPrefix(strings.TrimSpace(sc.Text()), "# want:")
+		text := strings.TrimSpace(sc.Text())
+		line, ok := strings.CutPrefix(text, "# want:")
+		warning := false
 		if !ok {
-			continue
+			line, warning = strings.CutPrefix(text, "# warn:")
+			if !warning {
+				continue
+			}
 		}
 		path, substr, ok := strings.Cut(line, "|")
 		if !ok {
 			t.Fatalf("%s: malformed want line %q", file, sc.Text())
 		}
-		wants = append(wants, want{strings.TrimSpace(path), strings.TrimSpace(substr)})
+		wants = append(wants, want{strings.TrimSpace(path), strings.TrimSpace(substr), warning})
 	}
 	if len(wants) == 0 {
 		t.Fatalf("%s: no '# want:' lines", file)
@@ -78,22 +85,20 @@ func TestInvalidTestdata(t *testing.T) {
 				wants := readWants(t, f)
 				matched := make([]bool, len(wants))
 				for _, d := range validateFile(t, f) {
-					if d.Severity != SeverityError {
-						continue
-					}
+					warning := d.Severity != SeverityError
 					found := false
 					for i, w := range wants {
-						if d.Path == w.path && strings.Contains(d.Message, w.substr) {
+						if w.warning == warning && d.Path == w.path && strings.Contains(d.Message, w.substr) {
 							matched[i], found = true, true
 						}
 					}
-					if !found {
+					if !found && !warning {
 						t.Errorf("unexpected error: %s", d)
 					}
 				}
 				for i, w := range wants {
 					if !matched[i] {
-						t.Errorf("missing error at %q containing %q", w.path, w.substr)
+						t.Errorf("missing diagnostic (warning=%v) at %q containing %q", w.warning, w.path, w.substr)
 					}
 				}
 			})

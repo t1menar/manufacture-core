@@ -1,6 +1,10 @@
 package spec
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"slices"
+	"time"
+)
 
 // APIVersion is the only resource API version this core understands.
 const APIVersion = "manufacture.dev/v1"
@@ -45,14 +49,48 @@ const (
 
 // ModuleSpec is the desired state of a module.
 type ModuleSpec struct {
-	Image       string            `json:"image,omitempty"`
-	Runtime     RuntimeMode       `json:"runtime,omitempty"`
-	Replicas    *Replicas         `json:"replicas,omitempty"`
-	Concurrency int               `json:"concurrency,omitempty"`
-	Resources   *Resources        `json:"resources,omitempty"`
-	Env         map[string]string `json:"env,omitempty"`
-	Secrets     []SecretEnv       `json:"secrets,omitempty"`
-	Config      json.RawMessage   `json:"config,omitempty"`
+	Image        string            `json:"image,omitempty"`
+	Runtime      RuntimeMode       `json:"runtime,omitempty"`
+	Replicas     *Replicas         `json:"replicas,omitempty"`
+	Concurrency  int               `json:"concurrency,omitempty"`
+	Resources    *Resources        `json:"resources,omitempty"`
+	Env          map[string]string `json:"env,omitempty"`
+	Secrets      []SecretEnv       `json:"secrets,omitempty"`
+	Config       json.RawMessage   `json:"config,omitempty"`
+	MinBudgetUSD *float64          `json:"min_budget_usd,omitempty"`
+	Subscribe    []Subscription    `json:"subscribe,omitempty"`
+}
+
+// RunEvent names a run lifecycle notification a module may subscribe to.
+type RunEvent string
+
+// Run lifecycle notifications.
+const (
+	RunStarted  RunEvent = "run.started"
+	RunFinished RunEvent = "run.finished"
+)
+
+// Subscription delivers a run notification to the module queue mf.notify.<name>.
+// In YAML it is an event name (all pipelines) or {event, pipelines}.
+type Subscription struct {
+	Event     RunEvent `json:"event"`
+	Pipelines []string `json:"pipelines,omitempty"` // empty: every pipeline
+}
+
+// UnmarshalJSON accepts the short form "run.finished" and the object form.
+func (s *Subscription) UnmarshalJSON(b []byte) error {
+	var ev string
+	if json.Unmarshal(b, &ev) == nil {
+		*s = Subscription{Event: RunEvent(ev)}
+		return nil
+	}
+	type plain Subscription
+	return json.Unmarshal(b, (*plain)(s))
+}
+
+// Wants reports whether the subscription covers the event of the pipeline.
+func (s Subscription) Wants(ev RunEvent, pipeline string) bool {
+	return s.Event == ev && (len(s.Pipelines) == 0 || slices.Contains(s.Pipelines, pipeline))
 }
 
 // EffectiveRuntime returns the runtime mode with the default applied.
@@ -92,6 +130,8 @@ type Pipeline struct {
 type PipelineSpec struct {
 	Trigger     *Trigger     `json:"trigger,omitempty"`
 	Concurrency *Concurrency `json:"concurrency,omitempty"`
+	Priority    int          `json:"priority,omitempty"`
+	Budget      *Budget      `json:"budget,omitempty"`
 	Context     *ContextSpec `json:"context,omitempty"`
 	Blobs       *BlobsSpec   `json:"blobs,omitempty"`
 	Defaults    *StepPolicy  `json:"defaults,omitempty"`
@@ -106,12 +146,22 @@ type Trigger struct {
 
 // Concurrency limits the active runs of a pipeline.
 type Concurrency struct {
-	MaxRuns int `json:"max_runs,omitempty"`
+	MaxRuns      int      `json:"max_runs,omitempty"`
+	CountWaiting bool     `json:"count_waiting,omitempty"`
+	MinInterval  Duration `json:"min_interval,omitempty"`
+}
+
+// Budget limits the cost of runs (usage.cost_usd reported by modules).
+type Budget struct {
+	RunUSD  float64 `json:"run_usd,omitempty"`
+	WarnUSD float64 `json:"warn_usd,omitempty"`
+	DayUSD  float64 `json:"day_usd,omitempty"`
 }
 
 // ContextSpec describes run data.
 type ContextSpec struct {
-	Schema json.RawMessage `json:"schema,omitempty"`
+	Schema   json.RawMessage `json:"schema,omitempty"`
+	MaxBytes int             `json:"max_bytes,omitempty"`
 }
 
 // BlobsSpec controls large payloads stored by reference.
@@ -121,9 +171,40 @@ type BlobsSpec struct {
 
 // StepPolicy holds the reliability settings that pipeline defaults and steps share.
 type StepPolicy struct {
+	Timeout   Duration  `json:"timeout,omitempty"`
+	Lease     Duration  `json:"lease,omitempty"`
+	Retry     *Retry    `json:"retry,omitempty"`
+	OnTimeout OnTimeout `json:"on_timeout,omitempty"`
+}
+
+// OnTimeout is what happens when an attempt exceeds its timeout or wait timeout.
+type OnTimeout string
+
+// Timeout actions.
+const (
+	OnTimeoutRetry     OnTimeout = "retry"
+	OnTimeoutFail      OnTimeout = "fail"
+	OnTimeoutAttention OnTimeout = "attention"
+)
+
+// Defaults of the 0.3.0 fields.
+const (
+	DefaultWaitTimeout     = Duration(7 * 24 * time.Hour)
+	DefaultContextMaxBytes = 196608
+)
+
+// OnCancel is what an operator cancel of a step does to the run.
+type OnCancel string
+
+// Cancel actions.
+const (
+	OnCancelFail      OnCancel = "fail"
+	OnCancelAttention OnCancel = "attention"
+)
+
+// Wait allows a step to wait for a human or an external system.
+type Wait struct {
 	Timeout Duration `json:"timeout,omitempty"`
-	Lease   Duration `json:"lease,omitempty"`
-	Retry   *Retry   `json:"retry,omitempty"`
 }
 
 // Stage is one position on the conveyor. Exactly one of Step and Parallel is set;
@@ -180,34 +261,49 @@ const (
 
 // Step is one module call inside a stage.
 type Step struct {
-	ID       string            `json:"id,omitempty"`
-	Module   string            `json:"module"`
-	Input    map[string]string `json:"input,omitempty"`
-	Config   json.RawMessage   `json:"config,omitempty"`
-	Timeout  Duration          `json:"timeout,omitempty"`
-	Lease    Duration          `json:"lease,omitempty"`
-	Retry    *Retry            `json:"retry,omitempty"`
-	When     string            `json:"when,omitempty"`
-	Merge    MergeMode         `json:"merge,omitempty"`
-	Optional bool              `json:"optional,omitempty"`
+	ID           string            `json:"id,omitempty"`
+	Module       string            `json:"module"`
+	Input        map[string]string `json:"input,omitempty"`
+	Config       json.RawMessage   `json:"config,omitempty"`
+	Timeout      Duration          `json:"timeout,omitempty"`
+	Lease        Duration          `json:"lease,omitempty"`
+	Retry        *Retry            `json:"retry,omitempty"`
+	OnTimeout    OnTimeout         `json:"on_timeout,omitempty"`
+	OnCancel     OnCancel          `json:"on_cancel,omitempty"`
+	Wait         *Wait             `json:"wait,omitempty"`
+	MinBudgetUSD *float64          `json:"min_budget_usd,omitempty"`
+	When         string            `json:"when,omitempty"`
+	Merge        MergeMode         `json:"merge,omitempty"`
+	Optional     bool              `json:"optional,omitempty"`
 }
 
 // Policy returns the step reliability settings with pipeline defaults applied.
 func (s Step) Policy(defaults *StepPolicy) StepPolicy {
-	p := StepPolicy{Timeout: s.Timeout, Lease: s.Lease, Retry: s.Retry}
-	if defaults == nil {
-		return p
+	p := StepPolicy{Timeout: s.Timeout, Lease: s.Lease, Retry: s.Retry, OnTimeout: s.OnTimeout}
+	if defaults != nil {
+		if p.Timeout == 0 {
+			p.Timeout = defaults.Timeout
+		}
+		if p.Lease == 0 {
+			p.Lease = defaults.Lease
+		}
+		if p.Retry == nil {
+			p.Retry = defaults.Retry
+		}
+		if p.OnTimeout == "" {
+			p.OnTimeout = defaults.OnTimeout
+		}
 	}
-	if p.Timeout == 0 {
-		p.Timeout = defaults.Timeout
-	}
-	if p.Lease == 0 {
-		p.Lease = defaults.Lease
-	}
-	if p.Retry == nil {
-		p.Retry = defaults.Retry
-	}
+	p.OnTimeout = defaultOnTimeout(p)
 	return p
+}
+
+// defaultOnTimeout resolves an unset on_timeout to retry (r2).
+func defaultOnTimeout(p StepPolicy) OnTimeout {
+	if p.OnTimeout != "" {
+		return p.OnTimeout
+	}
+	return OnTimeoutRetry
 }
 
 // Backoff is the delay growth between retries.
@@ -237,6 +333,20 @@ type Retry struct {
 	Max         Duration     `json:"max,omitempty"`
 	Jitter      *bool        `json:"jitter,omitempty"`
 	OnErrors    []ErrorClass `json:"on_errors,omitempty"`
+}
+
+// DefaultRetryOn are the error classes retried when on_errors is not set.
+var DefaultRetryOn = []ErrorClass{ErrorTransient, ErrorTimeout, ErrorLost}
+
+// Retries reports whether the policy retries the error class.
+func (r *Retry) Retries(c ErrorClass) bool {
+	if r == nil {
+		return false
+	}
+	if len(r.OnErrors) == 0 {
+		return slices.Contains(DefaultRetryOn, c)
+	}
+	return slices.Contains(r.OnErrors, c)
 }
 
 // JoinMode says when a parallel or foreach stage is complete.

@@ -38,6 +38,9 @@ func TestGoTypesMatchSchemas(t *testing.T) {
 		{Step{}, "pipeline", "/$defs/step"},
 		{Retry{}, "pipeline", "/$defs/retry"},
 		{Join{}, "pipeline", "/$defs/join"},
+		{Subscription{}, "module", "/$defs/subscription"},
+		{Budget{}, "pipeline", "/$defs/pipelineSpec/properties/budget"},
+		{Wait{}, "pipeline", "/$defs/step/properties/wait"},
 		{Route{}, "pipeline", "/$defs/route"},
 	} {
 		name := reflect.TypeOf(tc.typ).Name()
