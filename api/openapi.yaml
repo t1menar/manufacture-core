@@ -981,7 +981,7 @@ components:
       properties:
         run: { $ref: "#/components/schemas/Run" }
         steps: { type: array, items: { $ref: "#/components/schemas/Step" } }
-        context: { type: object, description: Current run data (blob references are not resolved). }
+        context: { type: object, description: "The current run data: the `data` part of the run context (docs/architecture.md §5.3); the `run` and `steps` parts are `run` and `steps` here. Blob references are not resolved." }
         snapshots:
           type: array
           items:

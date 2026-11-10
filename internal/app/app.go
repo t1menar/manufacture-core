@@ -11,13 +11,17 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/t1menar/manufacture-core/internal/buildinfo"
+	"github.com/t1menar/manufacture-core/internal/bus"
 	"github.com/t1menar/manufacture-core/internal/config"
 	"github.com/t1menar/manufacture-core/internal/contract"
 	"github.com/t1menar/manufacture-core/internal/db"
+	"github.com/t1menar/manufacture-core/internal/engine"
 	"github.com/t1menar/manufacture-core/internal/gateway"
+	"github.com/t1menar/manufacture-core/internal/metrics"
 	"github.com/t1menar/manufacture-core/internal/spec"
 	"github.com/t1menar/manufacture-core/internal/store"
 	"github.com/t1menar/manufacture-core/schemas"
@@ -73,11 +77,25 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger, o Options) 
 		return err
 	}
 	st := store.New(pool)
+	topo := bus.Topology{}
+	conn := &bus.Conn{URL: cfg.AMQPURL.Value(), Topo: topo, Log: log}
+	met := &metrics.Metrics{Pool: pool, Log: log}
+	eng := engine.New(engine.Options{Pool: pool, Store: st, Conn: conn, Topo: topo, Log: log, BlobBucket: cfg.S3.Bucket, Metrics: met})
 
 	if len(o.ApplyPaths) > 0 {
 		if err := bootstrapApply(ctx, st, o.ApplyPaths, log); err != nil {
 			return err
 		}
+	}
+
+	var wg sync.WaitGroup
+	defer wg.Wait()
+	ctx, stop := context.WithCancel(ctx)
+	defer stop()
+	if cfg.HasRole(config.RoleEngine) {
+		wg.Add(2)
+		go func() { defer wg.Done(); conn.Run(ctx) }()
+		go func() { defer wg.Done(); eng.Run(ctx) }()
 	}
 
 	if !cfg.HasRole(config.RoleGateway) {
@@ -94,8 +112,15 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger, o Options) 
 	for _, r := range cfg.Roles {
 		roles = append(roles, string(r))
 	}
+	ready := func(ctx context.Context) map[string]error {
+		if !cfg.HasRole(config.RoleEngine) {
+			return nil
+		}
+		return map[string]error{"broker": conn.Check(ctx)}
+	}
 	gw := gateway.New(gateway.Options{
 		Store: st, TokenHash: hash, UI: o.UI, Logger: log, SecureCookies: cfg.SecureCookies,
+		Runs: eng, Live: live{e: eng, driver: string(cfg.Runtime)}, Metrics: met, Ready: ready, PipelineBusy: engine.PipelineBusy,
 		System: gateway.System{Version: bi.Version, Commit: bi.Commit, ContractVersion: schemas.Version(),
 			Driver: string(cfg.Runtime), Roles: roles,
 			Limits: gateway.Limits{MaxMessageBytes: contract.MaxMessageBytes, InlineMaxBytes: contract.InlineMaxBytes,

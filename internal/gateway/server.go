@@ -47,6 +47,10 @@ type Options struct {
 	UI http.Handler
 	// Live provides module and pipeline status; nil reports "unknown".
 	Live Live
+	// Runs serves the run endpoints; nil leaves them unserved (404).
+	Runs Runs
+	// Metrics serves /metrics (Prometheus text, no auth); nil leaves it unserved.
+	Metrics http.Handler
 	// Routes, when set, may add more routes (engine, stream) to the authenticated API mux.
 	Routes func(mux *http.ServeMux, auth func(http.Handler) http.Handler)
 	Ready  func(ctx context.Context) map[string]error
@@ -116,8 +120,14 @@ func New(o Options) *Server {
 	authed.HandleFunc("GET /api/v1/pipelines/{name}/revisions/{revision}", s.getPipelineRevision)
 	authed.HandleFunc("GET /api/v1/overview", s.overview)
 	authed.HandleFunc("GET /api/v1/audit", s.listAudit)
+	if o.Runs != nil {
+		s.RunRoutes(authed, o.Runs)
+	}
 	if o.Routes != nil {
 		o.Routes(authed, s.requireAuth)
+	}
+	if o.Metrics != nil {
+		mux.Handle("GET /metrics", o.Metrics)
 	}
 	// Everything else under /api/ that is planned but not served yet.
 	authed.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {

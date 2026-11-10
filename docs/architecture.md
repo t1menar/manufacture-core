@@ -342,6 +342,7 @@ spec:
   "steps": {"init": {"output": {"text": ""}, "status": "succeeded"}, "...": {}}
 }
 ```
+- **В API** `RunDetail.context` — это только `data`; части `run` и `steps` отдаются в `RunDetail.run` и `RunDetail.steps`. Снапшоты (`context_snapshots`, `run.finished.data`) тоже хранят только `data`.
 - **Вход шага.** По умолчанию модуль получает `data`. Можно указать проекцию `input: {text: "data.text", tiles: "steps.split.output.tiles"}` (CEL-пути). Тогда модуль получает только нужное, и большой контекст не гоняется целиком.
 - **Выход шага** всегда сохраняется в `steps.<id>.output`. Чтобы изменить `data`, шаг возвращает `patch` (JSON Merge Patch, RFC 7396). Для удобства в SDK `return Out(...)` по умолчанию означает `patch = output`; это управляется `merge: data | none` в спеке шага.
 - **Параллельные шаги.**

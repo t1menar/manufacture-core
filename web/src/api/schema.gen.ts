@@ -1215,7 +1215,7 @@ export type components = {
         RunDetail: {
             run: components["schemas"]["Run"];
             steps: components["schemas"]["Step"][];
-            /** @description Current run data (blob references are not resolved). */
+            /** @description The current run data: the `data` part of the run context (docs/architecture.md §5.3); the `run` and `steps` parts are `run` and `steps` here. Blob references are not resolved. */
             context: Record<string, unknown>;
             snapshots: {
                 after_stage: number;

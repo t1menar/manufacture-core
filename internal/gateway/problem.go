@@ -59,11 +59,21 @@ func problem(w http.ResponseWriter, status int, code, detail string) {
 	writeProblem(w, Problem{Status: status, Code: code, Detail: detail})
 }
 
+// codedError is an error with its own API status and code (engine conflicts).
+type codedError interface {
+	error
+	ProblemCode() string
+	HTTPStatus() int
+}
+
 // fail maps store errors to problems; unexpected errors are logged and hidden.
 func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	var ve *store.ValidationError
 	var mbe *http.MaxBytesError
+	var ce codedError
 	switch {
+	case errors.As(err, &ce):
+		problem(w, ce.HTTPStatus(), ce.ProblemCode(), ce.Error())
 	case errors.As(err, &ve):
 		writeProblem(w, Problem{Status: http.StatusUnprocessableEntity, Code: CodeValidationFailed,
 			Detail: ve.Error(), Errors: ve.Diagnostics})
