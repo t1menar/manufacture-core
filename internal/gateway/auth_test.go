@@ -33,7 +33,7 @@ func TestSessionCookie(t *testing.T) {
 
 func TestBearer(t *testing.T) {
 	a := NewAuth(TokenHash("secret-0123456789abcdef0123456789ab"))
-	r := httptest.NewRequest("GET", "/api/v1/system", http.NoBody)
+	r := httptest.NewRequest(http.MethodGet, "/api/v1/system", http.NoBody)
 	r.Header.Set("Authorization", "bearer secret-0123456789abcdef0123456789ab")
 	if ok, _ := a.authenticate(r); !ok {
 		t.Fatal("scheme must be case-insensitive")
