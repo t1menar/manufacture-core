@@ -31,4 +31,7 @@ jobs:
       - name: publish release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${GITHUB_REF_NAME}" dist/*.tar.gz dist/SHA256SUMS --title "Contract ${GITHUB_REF_NAME#contract-v}" --notes "Manufacture contract: resource schemas, envelope schemas, gateway OpenAPI, testdata. See CHANGELOG.md."
+        run: |
+          gh release create "${GITHUB_REF_NAME}" dist/*.tar.gz dist/SHA256SUMS \
+            --title "Contract ${GITHUB_REF_NAME#contract-v}" \
+            --notes "Manufacture contract (resource and envelope schemas, gateway OpenAPI, testdata). See CHANGELOG.md."
