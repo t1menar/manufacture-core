@@ -1,0 +1,637 @@
+openapi: 3.1.0
+info:
+  title: Manufacture gateway API
+  version: 0.2.0
+  summary: REST and live event stream of the Manufacture core.
+  description: |
+    The gateway role of `manufacture serve` exposes this API on `MF_LISTEN_ADDR` under `/api/v1`,
+    the admin panel under `/`, and probes at `/healthz`, `/readyz`, `/metrics`.
+
+    **Auth.** Every `/api/v1` call needs the admin token (`MF_ADMIN_TOKEN`), sent either as
+    `Authorization: Bearer <token>` or as the `mf_session` cookie that `POST /api/v1/session` sets
+    (the browser `EventSource` cannot send headers). One token, one role (admin) for now.
+
+    **Errors** are `application/problem+json` (RFC 9457) with a stable `code`.
+
+    **Pagination.** List endpoints take `limit` (1-200, default 50) and an opaque `cursor`
+    and return `next_cursor` when more items exist.
+
+    **Live data.** `GET /api/v1/stream` is a Server-Sent Events stream. Each event has
+    `id` (monotonic, resumable via `Last-Event-ID`), `event` (the type) and `data` (JSON, see `StreamEvent`).
+    A client that falls too far behind gets `event: reset` and must reload snapshots
+    (`/overview`, `/pipelines/{name}/conveyor`). Comment lines (`: ping`) are sent every 15 s.
+  license:
+    name: MIT
+    identifier: MIT
+servers:
+  - url: http://127.0.0.1:8080
+security:
+  - bearer: []
+  - session: []
+tags:
+  - name: system
+    description: Probes, version, session, audit.
+  - name: resources
+    description: Modules and pipelines (declarative specs with revisions).
+  - name: runs
+    description: Pipeline runs, steps, attempts and blobs.
+  - name: live
+    description: Snapshots and the live event stream for dashboards and the 3D conveyor.
+paths:
+  /healthz:
+    get:
+      operationId: getHealth
+      tags: [system]
+      summary: Liveness probe
+      security: []
+      responses:
+        "200": { description: The process is alive., content: { text/plain: { schema: { type: string } } } }
+  /readyz:
+    get:
+      operationId: getReadiness
+      tags: [system]
+      summary: Readiness probe (database and broker reachable)
+      security: []
+      responses:
+        "200": { description: Ready., content: { application/json: { schema: { $ref: "#/components/schemas/Readiness" } } } }
+        "503": { description: Not ready., content: { application/json: { schema: { $ref: "#/components/schemas/Readiness" } } } }
+  /api/v1/info:
+    get:
+      operationId: getInfo
+      tags: [system]
+      summary: Version, contract version and runtime driver
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Info" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /api/v1/session:
+    post:
+      operationId: createSession
+      tags: [system]
+      summary: Exchange the admin token for an HttpOnly session cookie
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [token], additionalProperties: false, properties: { token: { type: string } } }
+      responses:
+        "204":
+          description: Cookie set.
+          headers: { Set-Cookie: { schema: { type: string }, description: "mf_session=...; HttpOnly; SameSite=Strict; Path=/" } }
+        "401": { $ref: "#/components/responses/Problem" }
+    delete:
+      operationId: deleteSession
+      tags: [system]
+      summary: Clear the session cookie
+      responses:
+        "204": { description: Cookie cleared. }
+  /api/v1/apply:
+    post:
+      operationId: applyResources
+      tags: [resources]
+      summary: Create or update resources (server-side apply)
+      description: |
+        Accepts the same YAML/JSON documents as `manufacture validate`. All documents are validated
+        first; nothing is applied when any has an error. A document identical to the current
+        revision is `unchanged` and creates no revision.
+      parameters:
+        - { name: dry_run, in: query, schema: { type: boolean, default: false } }
+        - { name: source, in: query, description: Who applies (audit)., schema: { type: string, enum: [cli, ui, bootstrap, api], default: api } }
+      requestBody:
+        required: true
+        content:
+          application/yaml: { schema: { type: string } }
+          application/json: { schema: { type: object } }
+      responses:
+        "200": { description: "Applied (or would be, for dry_run).", content: { application/json: { schema: { $ref: "#/components/schemas/ApplyResult" } } } }
+        "422": { description: Validation failed; nothing applied., content: { application/json: { schema: { $ref: "#/components/schemas/ApplyResult" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /api/v1/modules:
+    get:
+      operationId: listModules
+      tags: [resources]
+      summary: List modules with live status
+      responses:
+        "200":
+          description: OK
+          content: { application/json: { schema: { type: object, required: [items], properties: { items: { type: array, items: { $ref: "#/components/schemas/ModuleSummary" } } } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /api/v1/modules/{name}:
+    parameters: [{ $ref: "#/components/parameters/Name" }]
+    get:
+      operationId: getModule
+      tags: [resources]
+      summary: Module spec, status and replicas
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/ModuleDetail" } } } }
+        "404": { $ref: "#/components/responses/Problem" }
+    delete:
+      operationId: deleteModule
+      tags: [resources]
+      summary: Delete a module (fails while a current pipeline revision uses it)
+      responses:
+        "204": { description: Deleted; the runtime removes its replicas. }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+  /api/v1/modules/{name}/revisions:
+    parameters: [{ $ref: "#/components/parameters/Name" }]
+    get:
+      operationId: listModuleRevisions
+      tags: [resources]
+      summary: Revision history
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/RevisionList" } } } }
+        "404": { $ref: "#/components/responses/Problem" }
+  /api/v1/modules/{name}/scale:
+    parameters: [{ $ref: "#/components/parameters/Name" }]
+    put:
+      operationId: scaleModule
+      tags: [resources]
+      summary: Set a fixed replica count (creates a new revision)
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [replicas], additionalProperties: false, properties: { replicas: { type: integer, minimum: 0, maximum: 1000 } } } } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/ModuleDetail" } } } }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+  /api/v1/modules/{name}/logs:
+    parameters: [{ $ref: "#/components/parameters/Name" }]
+    get:
+      operationId: getModuleLogs
+      tags: [resources]
+      summary: Recent log lines of the module replicas (from the runtime driver)
+      parameters:
+        - { name: tail, in: query, schema: { type: integer, minimum: 1, maximum: 5000, default: 200 } }
+      responses:
+        "200": { description: "Log lines, oldest first.", content: { text/plain: { schema: { type: string } } } }
+        "404": { $ref: "#/components/responses/Problem" }
+        "501": { $ref: "#/components/responses/Problem" }
+  /api/v1/pipelines:
+    get:
+      operationId: listPipelines
+      tags: [resources]
+      summary: List pipelines with run counters
+      responses:
+        "200":
+          description: OK
+          content: { application/json: { schema: { type: object, required: [items], properties: { items: { type: array, items: { $ref: "#/components/schemas/PipelineSummary" } } } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /api/v1/pipelines/{name}:
+    parameters: [{ $ref: "#/components/parameters/Name" }]
+    get:
+      operationId: getPipeline
+      tags: [resources]
+      summary: Current revision of a pipeline
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/PipelineDetail" } } } }
+        "404": { $ref: "#/components/responses/Problem" }
+    delete:
+      operationId: deletePipeline
+      tags: [resources]
+      summary: Delete a pipeline (fails while it has active runs)
+      responses:
+        "204": { description: Deleted. }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+  /api/v1/pipelines/{name}/revisions:
+    parameters: [{ $ref: "#/components/parameters/Name" }]
+    get:
+      operationId: listPipelineRevisions
+      tags: [resources]
+      summary: Revision history
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/RevisionList" } } } }
+        "404": { $ref: "#/components/responses/Problem" }
+  /api/v1/pipelines/{name}/revisions/{revision}:
+    parameters:
+      - { $ref: "#/components/parameters/Name" }
+      - { name: revision, in: path, required: true, schema: { type: integer, minimum: 1 } }
+    get:
+      operationId: getPipelineRevision
+      tags: [resources]
+      summary: One revision
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/PipelineDetail" } } } }
+        "404": { $ref: "#/components/responses/Problem" }
+  /api/v1/pipelines/{name}/runs:
+    parameters: [{ $ref: "#/components/parameters/Name" }]
+    post:
+      operationId: startRun
+      tags: [runs]
+      summary: Start a run manually
+      description: With a source trigger and no `data`, the core sends `source.trigger` to the source module and returns 202; otherwise it starts a run with `data` and returns 201.
+      parameters:
+        - { name: Idempotency-Key, in: header, schema: { type: string, maxLength: 256 } }
+      requestBody:
+        content: { application/json: { schema: { type: object, additionalProperties: false, properties: { data: { type: object } } } } }
+      responses:
+        "201": { description: Run created (or the existing run for the same Idempotency-Key)., content: { application/json: { schema: { $ref: "#/components/schemas/Run" } } } }
+        "202": { description: Source module triggered., content: { application/json: { schema: { type: object, required: [trigger_id], properties: { trigger_id: { type: string, format: uuid } } } } } }
+        "404": { $ref: "#/components/responses/Problem" }
+        "422": { $ref: "#/components/responses/Problem" }
+  /api/v1/pipelines/{name}/conveyor:
+    parameters: [{ $ref: "#/components/parameters/Name" }]
+    get:
+      operationId: getConveyor
+      tags: [live]
+      summary: Snapshot for the 3D conveyor (stages, lanes, live metrics, items in flight)
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Conveyor" } } } }
+        "404": { $ref: "#/components/responses/Problem" }
+  /api/v1/runs:
+    get:
+      operationId: listRuns
+      tags: [runs]
+      summary: List runs, newest first
+      parameters:
+        - { name: pipeline, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { $ref: "#/components/schemas/RunStatus" } }
+        - { $ref: "#/components/parameters/Limit" }
+        - { $ref: "#/components/parameters/Cursor" }
+      responses:
+        "200":
+          description: OK
+          content: { application/json: { schema: { type: object, required: [items], properties: { items: { type: array, items: { $ref: "#/components/schemas/Run" } }, next_cursor: { type: string } } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /api/v1/runs/{id}:
+    parameters: [{ $ref: "#/components/parameters/ID" }]
+    get:
+      operationId: getRun
+      tags: [runs]
+      summary: Run with its steps and attempts
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/RunDetail" } } } }
+        "404": { $ref: "#/components/responses/Problem" }
+  /api/v1/runs/{id}/cancel:
+    parameters: [{ $ref: "#/components/parameters/ID" }]
+    post:
+      operationId: cancelRun
+      tags: [runs]
+      summary: Cancel a queued, running or parked run
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Run" } } } }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+  /api/v1/runs/{id}/resume:
+    parameters: [{ $ref: "#/components/parameters/ID" }]
+    post:
+      operationId: resumeRun
+      tags: [runs]
+      summary: Resume a run in needs_attention by retrying its failed steps with the same input
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Run" } } } }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+  /api/v1/runs/{id}/events:
+    parameters: [{ $ref: "#/components/parameters/ID" }]
+    get:
+      operationId: listRunEvents
+      tags: [runs]
+      summary: Timeline of the run (oldest first)
+      parameters: [{ $ref: "#/components/parameters/Limit" }, { $ref: "#/components/parameters/Cursor" }]
+      responses:
+        "200":
+          description: OK
+          content: { application/json: { schema: { type: object, required: [items], properties: { items: { type: array, items: { $ref: "#/components/schemas/StreamEvent" } }, next_cursor: { type: string } } } } }
+        "404": { $ref: "#/components/responses/Problem" }
+  /api/v1/blobs/presign:
+    get:
+      operationId: presignBlob
+      tags: [runs]
+      summary: Short-lived download URL for a blob reference of a run
+      parameters:
+        - { name: ref, in: query, required: true, schema: { type: string, pattern: "^s3://" } }
+        - { name: ttl_seconds, in: query, schema: { type: integer, minimum: 30, maximum: 86400, default: 900 } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { type: object, required: [url, expires_at], properties: { url: { type: string, format: uri }, expires_at: { type: string, format: date-time } } } } } }
+        "404": { $ref: "#/components/responses/Problem" }
+  /api/v1/overview:
+    get:
+      operationId: getOverview
+      tags: [live]
+      summary: Dashboard snapshot (counters, pipelines, modules with live metrics)
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Overview" } } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /api/v1/stream:
+    get:
+      operationId: streamEvents
+      tags: [live]
+      summary: Live events (Server-Sent Events)
+      parameters:
+        - name: topics
+          in: query
+          description: Comma-separated topics; default all.
+          schema: { type: string, example: "runs,steps,modules,metrics,resources" }
+        - { name: pipeline, in: query, description: Only events of this pipeline (module and metrics events are not filtered)., schema: { type: string } }
+        - { name: Last-Event-ID, in: header, description: Resume after this event id., schema: { type: string } }
+      responses:
+        "200":
+          description: |
+            `text/event-stream`. Each message: `id: <n>`, `event: <StreamEvent.type>`, `data: <StreamEvent JSON>`.
+          content: { text/event-stream: { schema: { $ref: "#/components/schemas/StreamEvent" } } }
+        "401": { $ref: "#/components/responses/Problem" }
+  /api/v1/metrics/query:
+    get:
+      operationId: queryMetrics
+      tags: [live]
+      summary: Range query proxied to Prometheus (allow-listed mf_* expressions)
+      parameters:
+        - { name: query, in: query, required: true, schema: { type: string } }
+        - { name: start, in: query, required: true, schema: { type: string, format: date-time } }
+        - { name: end, in: query, required: true, schema: { type: string, format: date-time } }
+        - { name: step, in: query, schema: { type: string, default: 15s } }
+      responses:
+        "200": { description: Prometheus range-query response body., content: { application/json: { schema: { type: object } } } }
+        "400": { $ref: "#/components/responses/Problem" }
+        "503": { $ref: "#/components/responses/Problem" }
+  /api/v1/audit:
+    get:
+      operationId: listAudit
+      tags: [system]
+      summary: Operator actions, newest first
+      parameters: [{ $ref: "#/components/parameters/Limit" }, { $ref: "#/components/parameters/Cursor" }]
+      responses:
+        "200":
+          description: OK
+          content: { application/json: { schema: { type: object, required: [items], properties: { items: { type: array, items: { $ref: "#/components/schemas/AuditEntry" } }, next_cursor: { type: string } } } } }
+  /api/v1/openapi.yaml:
+    get:
+      operationId: getOpenAPI
+      tags: [system]
+      summary: This document
+      security: []
+      responses:
+        "200": { description: OK, content: { application/yaml: { schema: { type: string } } } }
+
+components:
+  securitySchemes:
+    bearer: { type: http, scheme: bearer, description: "MF_ADMIN_TOKEN" }
+    session: { type: apiKey, in: cookie, name: mf_session }
+  parameters:
+    Name: { name: name, in: path, required: true, schema: { type: string, pattern: "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$" } }
+    ID: { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    Limit: { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+    Cursor: { name: cursor, in: query, schema: { type: string } }
+  responses:
+    Problem:
+      description: Error
+      content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } }
+  schemas:
+    Problem:
+      type: object
+      required: [type, title, status, code]
+      properties:
+        type: { type: string, example: about:blank }
+        title: { type: string }
+        status: { type: integer }
+        code: { type: string, description: "Stable machine code: not_found, conflict, invalid_request, unauthorized, validation_failed, not_implemented, internal." }
+        detail: { type: string }
+        instance: { type: string }
+    Readiness:
+      type: object
+      required: [ready, checks]
+      properties:
+        ready: { type: boolean }
+        checks: { type: object, additionalProperties: { type: string, description: '"ok" or the error' } }
+    Info:
+      type: object
+      required: [version, contract_version, runtime, roles]
+      properties:
+        version: { type: string }
+        commit: { type: string }
+        contract_version: { type: string }
+        runtime: { type: string, enum: [docker, kubernetes, external] }
+        roles: { type: array, items: { type: string, enum: [engine, controller, gateway] } }
+    Diagnostic:
+      type: object
+      required: [severity, source, message]
+      properties:
+        severity: { type: string, enum: [error, warning] }
+        source: { type: string }
+        line: { type: integer }
+        column: { type: integer }
+        resource: { type: string }
+        path: { type: string }
+        message: { type: string }
+    ApplyResult:
+      type: object
+      required: [applied, results, diagnostics]
+      properties:
+        applied: { type: boolean, description: false for dry_run or on errors }
+        results:
+          type: array
+          items:
+            type: object
+            required: [kind, name, action, revision]
+            properties:
+              kind: { type: string, enum: [Module, Pipeline] }
+              name: { type: string }
+              action: { type: string, enum: [created, updated, unchanged] }
+              revision: { type: integer }
+        diagnostics: { type: array, items: { $ref: "#/components/schemas/Diagnostic" } }
+    Revision:
+      type: object
+      required: [revision, spec_hash, applied_at, source]
+      properties:
+        revision: { type: integer }
+        spec_hash: { type: string }
+        applied_at: { type: string, format: date-time }
+        source: { type: string }
+        current: { type: boolean }
+    RevisionList:
+      type: object
+      required: [items]
+      properties: { items: { type: array, items: { $ref: "#/components/schemas/Revision" } } }
+    Health: { type: string, enum: [up, degraded, down, unknown] }
+    LiveMetrics:
+      type: object
+      description: Rolling 1-minute window computed by the core.
+      required: [in_flight, queue_depth, rate_per_min, error_rate, p50_ms, p95_ms]
+      properties:
+        in_flight: { type: integer }
+        queue_depth: { type: integer, description: -1 when unknown }
+        rate_per_min: { type: number, description: Finished attempts per minute. }
+        error_rate: { type: number, minimum: 0, maximum: 1 }
+        p50_ms: { type: number }
+        p95_ms: { type: number }
+    Replica:
+      type: object
+      required: [id, state]
+      properties:
+        id: { type: string }
+        state: { type: string, enum: [starting, ready, unhealthy, stopped] }
+        sdk: { type: string }
+        version: { type: string }
+        last_seen_at: { type: string, format: date-time }
+        in_flight: { type: integer }
+    ModuleSummary:
+      type: object
+      required: [name, revision, image, runtime, health, replicas, live]
+      properties:
+        name: { type: string }
+        revision: { type: integer }
+        image: { type: string }
+        runtime: { type: string, enum: [auto, external] }
+        health: { $ref: "#/components/schemas/Health" }
+        replicas: { type: object, required: [desired, ready], properties: { desired: { type: integer }, ready: { type: integer } } }
+        live: { $ref: "#/components/schemas/LiveMetrics" }
+    ModuleDetail:
+      allOf:
+        - $ref: "#/components/schemas/ModuleSummary"
+        - type: object
+          required: [spec, replica_list]
+          properties:
+            spec: { type: object, description: The applied Module document (schemas/v1/module.schema.json). }
+            replica_list: { type: array, items: { $ref: "#/components/schemas/Replica" } }
+            conditions: { type: array, items: { type: string }, description: Human-readable problems reported by the runtime. }
+            manifest: { type: object, description: Last module.online payload. }
+    PipelineSummary:
+      type: object
+      required: [name, revision, stages, runs]
+      properties:
+        name: { type: string }
+        revision: { type: integer }
+        stages: { type: integer }
+        runs: { type: object, required: [active, queued, needs_attention, succeeded, failed], properties: { active: { type: integer }, queued: { type: integer }, needs_attention: { type: integer }, succeeded: { type: integer }, failed: { type: integer } } }
+    PipelineDetail:
+      type: object
+      required: [name, revision, spec]
+      properties:
+        name: { type: string }
+        revision: { type: integer }
+        spec: { type: object, description: The applied Pipeline document with step ids filled in. }
+        applied_at: { type: string, format: date-time }
+    RunStatus: { type: string, enum: [queued, running, succeeded, failed, needs_attention, cancelled] }
+    StepStatus: { type: string, enum: [pending, dispatched, running, succeeded, failed, skipped, cancelled] }
+    Run:
+      type: object
+      required: [id, pipeline, revision, status, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        pipeline: { type: string }
+        revision: { type: integer }
+        status: { $ref: "#/components/schemas/RunStatus" }
+        stage: { type: string, description: Current stage. }
+        attention: { type: string, description: Why the run needs an operator. }
+        trigger: { type: object, properties: { kind: { type: string, enum: [manual, source, schedule, api] }, by: { type: string } } }
+        created_at: { type: string, format: date-time }
+        started_at: { type: string, format: date-time }
+        finished_at: { type: string, format: date-time }
+    Attempt:
+      type: object
+      required: [id, number, status]
+      properties:
+        id: { type: string, format: uuid }
+        number: { type: integer }
+        status: { type: string, enum: [scheduled, dispatched, running, succeeded, failed, timed_out, lost, cancelled] }
+        replica_id: { type: string }
+        error: { type: object, properties: { class: { type: string }, code: { type: string }, message: { type: string } } }
+        progress: { type: number }
+        not_before: { type: string, format: date-time }
+        started_at: { type: string, format: date-time }
+        finished_at: { type: string, format: date-time }
+    Step:
+      type: object
+      required: [id, stage, step, module, status, attempts]
+      properties:
+        id: { type: string, format: uuid }
+        stage: { type: string }
+        step: { type: string }
+        module: { type: string }
+        item_index: { type: integer }
+        visit: { type: integer, description: "1 for the first pass, higher after route loops." }
+        status: { $ref: "#/components/schemas/StepStatus" }
+        output: { type: object }
+        attempts: { type: array, items: { $ref: "#/components/schemas/Attempt" } }
+    RunDetail:
+      allOf:
+        - $ref: "#/components/schemas/Run"
+        - type: object
+          required: [data, steps]
+          properties:
+            data: { type: object, description: Current run data (blob references are not resolved). }
+            steps: { type: array, items: { $ref: "#/components/schemas/Step" } }
+    Conveyor:
+      type: object
+      required: [pipeline, revision, stages, routes, items]
+      properties:
+        pipeline: { type: string }
+        revision: { type: integer }
+        stages:
+          type: array
+          items:
+            type: object
+            required: [name, index, kind, lanes]
+            properties:
+              name: { type: string }
+              index: { type: integer }
+              kind: { type: string, enum: [single, parallel, foreach] }
+              lanes:
+                type: array
+                description: Parallel modules of the stage share its position on the belt.
+                items:
+                  type: object
+                  required: [step, module, health, replicas, live]
+                  properties:
+                    step: { type: string }
+                    module: { type: string }
+                    health: { $ref: "#/components/schemas/Health" }
+                    replicas: { type: object, required: [desired, ready], properties: { desired: { type: integer }, ready: { type: integer } } }
+                    live: { $ref: "#/components/schemas/LiveMetrics" }
+        routes:
+          type: array
+          items: { type: object, required: [from, to], properties: { from: { type: string }, to: { type: string }, max_visits: { type: integer } } }
+        items:
+          type: array
+          description: Runs in flight (at most 2000; older ones are counted in overflow).
+          items:
+            type: object
+            required: [run_id, stage, state]
+            properties:
+              run_id: { type: string, format: uuid }
+              stage: { type: string }
+              lanes: { type: array, items: { type: string }, description: Step ids being processed. }
+              state: { type: string, enum: [queued, moving, processing, failed, attention] }
+              since: { type: string, format: date-time }
+        overflow: { type: integer }
+    Overview:
+      type: object
+      required: [runs, pipelines, modules]
+      properties:
+        runs: { type: object, required: [active, queued, needs_attention, succeeded_24h, failed_24h], properties: { active: { type: integer }, queued: { type: integer }, needs_attention: { type: integer }, succeeded_24h: { type: integer }, failed_24h: { type: integer } } }
+        pipelines: { type: array, items: { $ref: "#/components/schemas/PipelineSummary" } }
+        modules: { type: array, items: { $ref: "#/components/schemas/ModuleSummary" } }
+    AuditEntry:
+      type: object
+      required: [id, at, actor, action, target]
+      properties:
+        id: { type: integer }
+        at: { type: string, format: date-time }
+        actor: { type: string }
+        action: { type: string, examples: [apply, scale, delete, run.start, run.cancel, run.resume] }
+        target: { type: string }
+        details: { type: object }
+    StreamEvent:
+      type: object
+      description: One live event. `id` is also the SSE id.
+      required: [id, type, at, data]
+      properties:
+        id: { type: integer }
+        type:
+          type: string
+          enum: [run.created, run.updated, step.updated, attempt.progress, module.updated, resource.applied, resource.deleted, metrics.tick, reset]
+        at: { type: string, format: date-time }
+        pipeline: { type: string }
+        run_id: { type: string, format: uuid }
+        data:
+          description: |
+            run.created / run.updated → Run.
+            step.updated → Step without attempts plus `attempt` (Attempt).
+            attempt.progress → {step_id, attempt_id, progress, message}.
+            module.updated → ModuleSummary.
+            resource.applied / resource.deleted → {kind, name, revision}.
+            metrics.tick (every second) → {modules: {<name>: LiveMetrics}, runs: {active, queued}}.
+            reset → {} (reload snapshots).
+          type: object

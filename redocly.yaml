@@ -1,0 +1,3 @@
+extends: [recommended]
+rules:
+  operation-4xx-response: off # probes and the document itself have no client errors
