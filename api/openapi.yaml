@@ -105,7 +105,12 @@ paths:
         required: true
         content:
           application/yaml: { schema: { type: string } }
-          application/json: { schema: { type: object } }
+          application/json:
+            schema:
+              description: "Either {files: [...]} (diagnostics then name the files) or the documents themselves as JSON."
+              anyOf:
+                - $ref: "#/components/schemas/ApplyFiles"
+                - { type: object, description: One resource document as JSON. }
       responses:
         "200": { description: "Applied (or would be, for dry_run).", content: { application/json: { schema: { $ref: "#/components/schemas/ApplyResult" } } } }
         "422": { description: "Validation failed; nothing applied. Problem with code validation_failed and errors[].", content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } } }
@@ -452,6 +457,14 @@ components:
         resource: { type: string, description: "Kind/name, e.g. Pipeline/hello." }
         path: { type: string, description: "JSON pointer inside the document, e.g. /spec/stages/0/steps/1." }
         message: { type: string }
+    ApplyFiles:
+      type: object
+      required: [files]
+      properties:
+        files:
+          type: array
+          minItems: 1
+          items: { type: object, required: [content], properties: { name: { type: string }, content: { type: string, description: YAML or JSON text. } } }
     ApplyResult:
       type: object
       required: [applied, results]
