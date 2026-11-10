@@ -85,7 +85,7 @@ flowchart LR
 ```
 manufacture-core/
 ├── cmd/manufacture/       # serve | migrate | validate | config | version
-├── cmd/mfctl/             # apply | get | describe | run | logs | delete (с PR C3)
+├── cmd/mfctl/             # apply | get | describe | scale | delete | run | logs
 ├── internal/
 │   ├── config/            # env-конфиг ядра
 │   ├── spec/              # Go-типы ресурсов, декодер YAML, семантическая проверка
@@ -727,9 +727,9 @@ sequenceDiagram
 ### 11.1 `manufacture-core`
 | PR | Содержание | Критерии приёмки |
 |---|---|---|
-| **C1. Каркас и спек ресурсов** ([#1](https://github.com/t1menar/manufacture-core/pull/1), CI зелёный, ждёт мержа) | Go-модуль, `cmd/manufacture` (`validate`, `config`, `version`), `internal/config`, `schemas/v1` (Module, Pipeline), Go-типы, строгий декодер YAML с номерами строк, семантика (стадии, parallel, foreach, join, routes и `max_visits`, ссылки на модули), CEL-компиляция, `testdata/`, Makefile, golangci-lint, CI | `manufacture validate -f` принимает `testdata/valid/*`, отвергает каждый `testdata/invalid/*` с ошибкой `файл:строка: путь: сообщение`; CI (lint, test -race, build) зелёный |
+| **C1. Каркас и спек ресурсов** ([#1](https://github.com/t1menar/manufacture-core/pull/1), смержен) | Go-модуль, `cmd/manufacture` (`validate`, `config`, `version`), `internal/config`, `schemas/v1` (Module, Pipeline), Go-типы, строгий декодер YAML с номерами строк, семантика (стадии, parallel, foreach, join, routes и `max_visits`, ссылки на модули), CEL-компиляция, `testdata/`, Makefile, golangci-lint, CI | `manufacture validate -f` принимает `testdata/valid/*`, отвергает каждый `testdata/invalid/*` с ошибкой `файл:строка: путь: сообщение`; CI (lint, test -race, build) зелёный |
 | **C2. Контракт сообщений и API** (сделано) | `schemas/envelope/v2`, манифест модуля, `api/openapi.yaml` v2, ADR 001–010, workflow релиза контракта (`contract-vX.Y.Z.tar.gz`) | Схемы проходят lint; на тег создаётся релиз с архивом и SHA256SUMS |
-| C3. Store и apply | PostgreSQL (goose, pgx), ревизии `modules` и `pipelines`, gateway `POST /api/v1/apply`, `GET`, `mfctl apply/get/describe`, admin-токен | Повторный apply того же файла даёт 1 ревизию; невалидный спек даёт 422 с путём; itest на PG |
+| **C3. Store и apply** (сделано) | PostgreSQL (goose, pgx), ревизии `modules` и `pipelines`, gateway `POST /api/v1/apply`, `GET`, `mfctl apply/get/describe`, admin-токен | Повторный apply того же файла даёт 1 ревизию; невалидный спек даёт 422 с путём; itest на PG |
 | C4. Engine (линейный) | runs, steps, attempts, outbox/inbox/fence из v1, retry/backoff, timeout, lease, cancel, admission | itest: дубль результата, stale fence, timeout → retry → cancel, lease lost, `needs_attention` не занимает слот |
 | C5. External runtime и регистрация | `module.online`, пользователи RabbitMQ на модуль, проверка совместимости контракта, статус реплик по heartbeat | Модуль-заглушка на Go проходит линейный пайплайн в itest |
 | C6. Docker-драйвер, compose, образ | `runtime/docker`, controller, `deploy/compose`, образ в GHCR (`:main`, `:pr-<n>`, `:vX`), job `e2e-examples` | `make up` поднимает стек; e2e Hello World из examples зелёный на образе PR |
