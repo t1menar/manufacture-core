@@ -26,6 +26,13 @@ jobs:
         with:
           version: v2.15.0
 
+  openapi:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: lint api/openapi.yaml
+        run: npx --yes @redocly/cli@2 lint api/openapi.yaml
+
   test:
     runs-on: ubuntu-latest
     steps:
