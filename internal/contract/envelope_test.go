@@ -1,6 +1,7 @@
 package contract
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -24,7 +25,8 @@ var payloadTypes = map[Type]any{
 	TypeStepRequested: &StepRequested{}, TypeStepCancel: &StepCancel{}, TypeSourceTrigger: &SourceTrigger{},
 	TypeStepHeartbeat: &StepHeartbeat{}, TypeStepSucceeded: &StepSucceeded{}, TypeStepFailed: &StepFailed{},
 	TypeRunRequested: &RunRequested{}, TypeModuleOnline: &ModuleOnline{}, TypeModuleHeartbeat: &ModuleHeartbeat{},
-	TypeModuleOffline: &ModuleOffline{},
+	TypeModuleOffline: &ModuleOffline{}, TypeStepWaiting: &StepWaiting{}, TypeRunRejected: &RunRejected{},
+	TypeRunStarted: &RunStarted{}, TypeRunFinished: &RunFinished{},
 }
 
 func TestValidEnvelopes(t *testing.T) {
@@ -103,5 +105,81 @@ func TestStableIDAndProducer(t *testing.T) {
 	}
 	if WorkQueue("m") != "mf.module.m" || ControlQueue("m", "r1") != "mf.control.m.r1" {
 		t.Error("topology names changed: this breaks deployed modules")
+	}
+}
+
+func readVectors(t *testing.T, name string, v any) {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("..", "..", "testdata", "envelope", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, v); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestStepKeyVectors checks testdata/envelope/step_key.json, which SDKs test against too.
+func TestStepKeyVectors(t *testing.T) {
+	var v struct {
+		StepNamespace uuid.UUID `json:"step_namespace"`
+		Cases         []struct {
+			RunID     uuid.UUID `json:"run_id"`
+			Stage     string    `json:"stage"`
+			Step      string    `json:"step"`
+			ItemIndex *int      `json:"item_index"`
+			Visit     int       `json:"visit"`
+			StepKey   uuid.UUID `json:"step_key"`
+		} `json:"cases"`
+	}
+	readVectors(t, "step_key.json", &v)
+	if v.StepNamespace != StepNamespace || StepNamespace.String() != "fa1e7bfd-2c37-5637-bb2e-15cdf57e7e2d" {
+		t.Fatalf("step namespace %s", StepNamespace)
+	}
+	for _, c := range v.Cases {
+		if got := StepKey(c.RunID, c.Stage, c.Step, c.ItemIndex, c.Visit); got != c.StepKey {
+			t.Errorf("StepKey(%s, %s, %s, %v, %d) = %s, want %s", c.RunID, c.Stage, c.Step, c.ItemIndex, c.Visit, got, c.StepKey)
+		}
+	}
+}
+
+// TestMessageIDVectors checks testdata/envelope/message_ids.json.
+func TestMessageIDVectors(t *testing.T) {
+	var v struct {
+		MessageNamespace uuid.UUID `json:"message_namespace"`
+		Cases            []struct {
+			Kind      string    `json:"kind"`
+			AttemptID uuid.UUID `json:"attempt_id"`
+			RunID     uuid.UUID `json:"run_id"`
+			Type      Type      `json:"type"`
+			Seq       int       `json:"seq"`
+			Pipeline  string    `json:"pipeline"`
+			DedupKey  string    `json:"dedup_key"`
+			MessageID uuid.UUID `json:"message_id"`
+		} `json:"cases"`
+	}
+	readVectors(t, "message_ids.json", &v)
+	if v.MessageNamespace != Namespace {
+		t.Fatal("message namespace differs from the vectors")
+	}
+	for _, c := range v.Cases {
+		var got uuid.UUID
+		switch c.Kind {
+		case "result":
+			got = ResultMessageID(c.AttemptID, c.Type)
+		case "waiting":
+			got = WaitingMessageID(c.AttemptID, c.Seq)
+		case "run_started":
+			got = RunStartedID(c.RunID)
+		case "run_finished":
+			got = RunFinishedID(c.RunID)
+		case "run_requested":
+			got = RunRequestID(c.Pipeline, c.DedupKey)
+		default:
+			t.Fatalf("unknown kind %q", c.Kind)
+		}
+		if got != c.MessageID {
+			t.Errorf("%s: got %s, want %s", c.Kind, got, c.MessageID)
+		}
 	}
 }

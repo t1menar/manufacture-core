@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -38,9 +40,13 @@ const (
 	TypeStepCancel      Type = "step.cancel"
 	TypeSourceTrigger   Type = "source.trigger"
 	TypeStepHeartbeat   Type = "step.heartbeat"
+	TypeStepWaiting     Type = "step.waiting"
 	TypeStepSucceeded   Type = "step.succeeded"
 	TypeStepFailed      Type = "step.failed"
 	TypeRunRequested    Type = "run.requested"
+	TypeRunRejected     Type = "run.rejected"
+	TypeRunStarted      Type = "run.started"
+	TypeRunFinished     Type = "run.finished"
 	TypeModuleOnline    Type = "module.online"
 	TypeModuleHeartbeat Type = "module.heartbeat"
 	TypeModuleOffline   Type = "module.offline"
@@ -148,6 +154,57 @@ var envelopeSchema = sync.OnceValues(func() (*jsonschema.Schema, error) {
 	return c.Compile(schemas.BaseURL + "envelope/v2/envelope.schema.json")
 })
 
+var blobRefSchema = sync.OnceValues(func() (*jsonschema.Schema, error) {
+	if _, err := envelopeSchema(); err != nil {
+		return nil, err
+	}
+	c := jsonschema.NewCompiler()
+	c.DefaultDraft(jsonschema.Draft2020)
+	c.AssertFormat()
+	b, err := schemas.FS().ReadFile("envelope/v2/blob-ref.schema.json")
+	if err != nil {
+		return nil, err
+	}
+	doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(b))
+	if err != nil {
+		return nil, err
+	}
+	if err := c.AddResource(schemas.BaseURL+"envelope/v2/blob-ref.schema.json", doc); err != nil {
+		return nil, err
+	}
+	return c.Compile(schemas.BaseURL + "envelope/v2/blob-ref.schema.json")
+})
+
+// checkBlobRefs validates every object with a $blob key inside the payload
+// (input, output, data) against blob-ref.schema.json.
+func checkBlobRefs(sch *jsonschema.Schema, v any, path []string, problems *[]string) {
+	switch x := v.(type) {
+	case map[string]any:
+		if _, ok := x["$blob"]; ok {
+			if err := sch.Validate(x); err != nil {
+				var verr *jsonschema.ValidationError
+				if errors.As(err, &verr) {
+					for _, l := range leaves(verr) {
+						l = strings.TrimPrefix(l, "/")
+						if !strings.HasPrefix(l, ":") {
+							l = "/" + l
+						}
+						*problems = append(*problems, "/"+strings.Join(path, "/")+l)
+					}
+				}
+			}
+			return
+		}
+		for k, e := range x {
+			checkBlobRefs(sch, e, append(path, k), problems)
+		}
+	case []any:
+		for i, e := range x {
+			checkBlobRefs(sch, e, append(path, strconv.Itoa(i)), problems)
+		}
+	}
+}
+
 var printer = message.NewPrinter(language.English)
 
 // ValidationError lists the schema violations of a message.
@@ -169,7 +226,22 @@ func validate(raw []byte) error {
 	if errors.As(err, &verr) {
 		return &ValidationError{Problems: leaves(verr)}
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	if m, ok := v.(map[string]any); ok {
+		bs, err := blobRefSchema()
+		if err != nil {
+			panic(err)
+		}
+		var problems []string
+		checkBlobRefs(bs, m["payload"], []string{"payload"}, &problems)
+		if len(problems) > 0 {
+			slices.Sort(problems)
+			return &ValidationError{Problems: problems}
+		}
+	}
+	return nil
 }
 
 func leaves(e *jsonschema.ValidationError) []string {
@@ -191,6 +263,40 @@ func StableID(parts ...string) uuid.UUID {
 
 // Namespace of derived message ids: uuid5(NAMESPACE_URL, "https://manufacture.dev/messages").
 var Namespace = uuid.NewSHA1(uuid.NameSpaceURL, []byte("https://manufacture.dev/messages"))
+
+// StepNamespace is the namespace of step keys: uuid5(NAMESPACE_URL, "https://manufacture.dev/steps").
+var StepNamespace = uuid.NewSHA1(uuid.NameSpaceURL, []byte("https://manufacture.dev/steps"))
+
+// StepKey is the stable id of one visit of a step, shared by all its attempts:
+// uuid5(StepNamespace, "<run_id>:<stage>:<step_id>:<item_index or ->:<visit>").
+func StepKey(runID uuid.UUID, stage, step string, itemIndex *int, visit int) uuid.UUID {
+	item := "-"
+	if itemIndex != nil {
+		item = strconv.Itoa(*itemIndex)
+	}
+	return uuid.NewSHA1(StepNamespace, []byte(runID.String()+":"+stage+":"+step+":"+item+":"+strconv.Itoa(visit)))
+}
+
+// WaitingMessageID is the message id of the seq-th step.waiting of an attempt.
+func WaitingMessageID(attemptID uuid.UUID, seq int) uuid.UUID {
+	return uuid.NewSHA1(Namespace, []byte(attemptID.String()+":step.waiting:"+strconv.Itoa(seq)))
+}
+
+// RunStartedID is the message id of the run.started notification of a run.
+func RunStartedID(runID uuid.UUID) uuid.UUID {
+	return uuid.NewSHA1(Namespace, []byte(runID.String()+":run.started"))
+}
+
+// RunFinishedID is the message id of the run.finished notification of a run.
+func RunFinishedID(runID uuid.UUID) uuid.UUID {
+	return uuid.NewSHA1(Namespace, []byte(runID.String()+":run.finished"))
+}
+
+// RunRequestID is the message id of a run.requested with a dedup key:
+// uuid5(Namespace, "run.requested:<pipeline>:<dedup_key>").
+func RunRequestID(pipeline, dedupKey string) uuid.UUID {
+	return uuid.NewSHA1(Namespace, []byte("run.requested:"+pipeline+":"+dedupKey))
+}
 
 // ResultMessageID is the message id a module uses for the outcome of an attempt
 // (step.succeeded, step.failed): uuid5(Namespace, "<attempt_id>:<type>").
